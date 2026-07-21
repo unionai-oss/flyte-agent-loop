@@ -58,14 +58,18 @@ def main() -> None:
         return
 
     deployments = flyte.deploy(env, dryrun=args.dryrun)
-    for dep in deployments:
-        print(f"{'Planned' if args.dryrun else 'Deployed'}: {dep}")
-    print(
-        "\nScheduled triggers:\n"
-        "  issue_to_pr  every 5 minutes\n"
-        "  pr_review    every 15 minutes\n"
-        "  evals        every 10 minutes"
-    )
+
+    from flyte._initialize import get_client
+
+    console = get_client().console
+    for deployment in deployments:
+        for deployed_env in deployment.envs.values():
+            for task in deployed_env.deployed_entities:
+                task_id = task.deployed_task.task_template.id
+                url = console.task_url(
+                    project=task_id.project, domain=task_id.domain, task_name=task_id.name
+                )
+                print(f"{task_id.name}  {url}")
 
 
 if __name__ == "__main__":

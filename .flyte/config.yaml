@@ -1,0 +1,9 @@
+admin:
+  endpoint: dns:///localhost:30080
+  insecure: true
+image:
+  builder: local
+  registry: localhost:30000
+task:
+  domain: development
+  project: flytesnacks

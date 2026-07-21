@@ -1,16 +1,20 @@
-"""Manual integration smoke test against the demo Union cluster.
+"""Manual integration smoke test against a live Union tenant.
 
-This is NOT run in CI or by the default ``pytest`` invocation (which is scoped to
-``tests/unit``). Run it explicitly, with credentials to the demo cluster:
+Intended for Union employees running against an actual tenant. It is NOT run in
+CI or by the default ``pytest`` invocation (which is scoped to ``tests/unit``).
+Run it explicitly:
 
-    # authenticate first (opens a browser):
-    #   union create login --auth device-flow --host demo.hosted.unionai.cloud
     RUN_INTEGRATION=1 pytest tests/integration -m integration -s
 
 It initializes from ``tests/integration/config.yaml`` (org=demo,
-project=flytesnacks, domain=development, remote image builder) and runs a real
-remote task that round-trips a ``flyte.ai.agents.MemoryStore`` through object
-storage — the same durable-memory path the production pipelines rely on.
+project=flytesnacks, domain=development, remote image builder) which uses
+device-flow auth (``admin.authType: DeviceFlow``) — the first run opens a browser
+to authenticate against the tenant. See
+https://www.union.ai/docs/v2/union/user-guide/authenticating/#device-flow
+
+The test runs a real remote task that round-trips a ``flyte.ai.agents.MemoryStore``
+through object storage — the same durable-memory path the production pipelines
+rely on.
 """
 
 from __future__ import annotations

@@ -63,31 +63,97 @@ export FLYTE_AGENT_REPO=your-org/your-sandbox-repo   # a repo you own!
 export FLYTE_AGENT_MODEL=claude-sonnet-4-5
 ```
 
-Create the two secrets in your Flyte/Union project (names must match
-[`environments.py`](src/flyte_agent_loop/environments.py)):
+### Create a GitHub token
 
-```bash
-flyte create secret github-token       --value ghp_xxx     # repo + PR scopes
-flyte create secret anthropic-api-key  --value sk-ant-xxx
-```
+The agent reads and writes the target repo through a GitHub **fine-grained
+personal access token (PAT)**. Create one scoped to *only* the repo in
+`FLYTE_AGENT_REPO`:
 
-## Run
+1. GitHub → **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**
+   (or go straight to <https://github.com/settings/personal-access-tokens/new>).
+2. **Token name** — e.g. `flyte-agent-loop`; set an **Expiration**.
+3. **Resource owner** — the user or org that owns the target repo.
+4. **Repository access** → **Only select repositories** → pick the repo you want
+   the agent to work on (the one in `FLYTE_AGENT_REPO`).
+5. **Permissions → Repository permissions** — set each of these to
+   **Read and write**:
 
-Locally, once (agents hit the real GitHub + model APIs — use a throwaway repo):
+   | Permission | Access | Why the agent needs it |
+   | --- | --- | --- |
+   | **Contents** | Read and write | read repo files, create branches, commit changes |
+   | **Pull requests** | Read and write | open/update PRs, read + post PR comments |
+   | **Issues** | Read and write | read issues, post the "dibs" claim comments |
+   | **Discussions** | Read and write | read/participate in repo discussions |
 
-```bash
-python examples/run_local.py issue_to_pr
-python examples/run_local.py pr_review
-python examples/run_local.py evals
-```
+   (**Metadata: Read-only** is selected automatically and is required.)
+6. **Generate token** and copy the `github_pat_...` value — you won't see it again.
 
-Deploy with the cron triggers active:
+> If you use a classic PAT instead, grant the `repo` scope (full control of
+> private repositories). Fine-grained tokens are strongly preferred because they
+> can be limited to the single target repo.
 
-```bash
-python -m flyte_agent_loop.deploy            # deploy + activate schedules
-python -m flyte_agent_loop.deploy --dryrun   # plan only
-python -m flyte_agent_loop.deploy --run evals  # ad-hoc single run
-```
+
+## Run on a local Flyte Devbox
+
+The [Flyte Devbox](https://www.union.ai/docs/v2/flyte/user-guide/run-modes/running-devbox/)
+is a full single-node Flyte cluster that runs locally in Docker — tasks execute
+in containers with schedules and reports, just like a remote cluster, but with
+nothing to provision. It's the easiest way to exercise the scheduled pipelines
+end-to-end on your machine.
+
+**Prerequisites:** Docker running (and `kubectl` if you want to inspect the
+cluster). The `flyte` CLI ships with the `flyte` package installed above.
+
+1. **Start the devbox** (first run pulls the image; UI at
+   <http://localhost:30080/v2>, image registry at `localhost:30000`):
+
+   ```bash
+   flyte start devbox
+   ```
+
+2. **Point the CLI/SDK at it.** Generate a config for the local cluster (writes
+   `./config.yaml`, which `flyte` and `flyte.init_from_config()` auto-discover):
+
+   ```bash
+   flyte create config \
+     --endpoint localhost:30080 --insecure --builder local \
+     --project flytesnacks --domain development \
+     --registry localhost:30000
+   ```
+
+   (It's gitignored. Use `-o ~/.flyte` to write `~/.flyte/config.yaml` instead.)
+
+3. **Add the secrets** to the devbox cluster (same names as before; see
+   [Create a GitHub token](#create-a-github-token)):
+
+   ```bash
+   flyte create secret github-token       --value github_pat_xxx
+   flyte create secret anthropic-api-key  --value sk-ant-xxx
+   ```
+
+4. **Deploy the pipelines** (uses `~/.flyte/config.yaml` via
+   `flyte.init_from_config()`); the local image builder builds into the devbox
+   registry:
+
+   ```bash
+   export FLYTE_AGENT_REPO=your-org/your-sandbox-repo
+   python -m flyte_agent_loop.deploy            # activate schedules on the devbox
+   python -m flyte_agent_loop.deploy --run issue_to_pr  # or trigger one run now {issue_to_pr, pr_review, evals}
+   ```
+
+   Watch executions and reports at <http://localhost:30080/v2>.
+
+5. **Pause / tear down** when done:
+
+   ```bash
+   flyte stop devbox              # pause (keeps state; resume with `flyte start devbox`)
+   flyte delete devbox --volume   # remove the container and its storage volume
+   ```
+
+> The manual integration test can also target the devbox instead of the demo
+> cluster — point `tests/integration/config.yaml` at `endpoint: dns:///localhost:30080`
+> with `builder: local`.
 
 ## Test
 
@@ -100,11 +166,14 @@ parsers are pure functions, and the GitHub client is exercised against an
 in-memory `httpx.MockTransport`. No cluster, network, or LLM key required. This
 is what CI runs (`.github/workflows/unit-tests.yml`, Python 3.11–3.13).
 
-`tests/integration` runs against the live demo Union cluster and is **manual**
-(skipped unless `RUN_INTEGRATION=1`):
+`tests/integration` runs against a live Union tenant and is **manual** (skipped
+unless `RUN_INTEGRATION=1`). It's intended for Union employees running against an
+actual tenant — [`tests/integration/config.yaml`](tests/integration/config.yaml)
+points at the `demo` tenant with
+[device-flow auth](https://www.union.ai/docs/v2/union/user-guide/authenticating/#device-flow)
+(`admin.authType: DeviceFlow`), so the first run opens a browser to authenticate:
 
 ```bash
-union create login --auth device-flow --host demo.hosted.unionai.cloud
 RUN_INTEGRATION=1 pytest tests/integration -m integration -s
 ```
 

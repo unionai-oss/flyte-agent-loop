@@ -1,5 +1,6 @@
 admin:
   endpoint: dns:///demo.hosted.unionai.cloud
+  authType: DeviceFlow
 image:
   builder: remote
 task:

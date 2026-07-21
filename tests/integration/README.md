@@ -1,17 +1,19 @@
 # Integration tests (manual)
 
-These tests execute against a **live Union/Flyte cluster** (the demo cluster) and
-are intentionally excluded from CI and the default `pytest` run. They are meant
-to be run by hand when you want to validate that the Flyte 2 usage in this repo
-actually works end-to-end remotely.
+These tests execute against a **live Union tenant** (the `demo` tenant) and are
+intentionally excluded from CI and the default `pytest` run. They are meant for
+**Union employees** to run by hand against an actual tenant, to validate that the
+Flyte 2 usage in this repo works end-to-end remotely.
 
 ## Config
 
-[`config.yaml`](./config.yaml) targets:
+[`config.yaml`](./config.yaml) targets the `demo` tenant with
+[device-flow auth](https://www.union.ai/docs/v2/union/user-guide/authenticating/#device-flow):
 
 ```yaml
 admin:
   endpoint: dns:///demo.hosted.unionai.cloud
+  authType: DeviceFlow
 image:
   builder: remote
 task:
@@ -22,21 +24,18 @@ task:
 
 ## Running
 
-1. Authenticate to the demo cluster (opens a browser):
+Because `authType: DeviceFlow` is set, there is no separate login command —
+`flyte.init_from_config()` triggers the OAuth2 device flow on the first
+authenticated call and prints a URL + code to open in your browser. Subsequent
+runs reuse the cached token.
 
-   ```bash
-   union create login --auth device-flow --host demo.hosted.unionai.cloud
-   ```
-
-2. Run the suite (the `RUN_INTEGRATION` gate + `-m integration` marker keep it
-   from running accidentally):
-
-   ```bash
-   RUN_INTEGRATION=1 pytest tests/integration -m integration -s
-   ```
+```bash
+RUN_INTEGRATION=1 pytest tests/integration -m integration -s
+```
 
 Without `RUN_INTEGRATION=1` the tests **skip**, so a plain `pytest tests/integration`
-is safe.
+is safe. (You can pre-authenticate out of band with any authenticated CLI call,
+e.g. `flyte --config tests/integration/config.yaml get project`.)
 
 ## What it covers
 
