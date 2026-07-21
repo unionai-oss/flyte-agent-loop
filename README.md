@@ -92,9 +92,20 @@ python -m flyte_agent_loop.deploy --run evals  # ad-hoc single run
 ## Test
 
 ```bash
-pytest -q
+pytest -q                 # unit suite (scoped to tests/unit via pyproject)
 ```
 
-The suite is fully hermetic: the claim state machine, evals, and agent-output
+`tests/unit` is fully hermetic: the claim state machine, evals, and agent-output
 parsers are pure functions, and the GitHub client is exercised against an
-in-memory `httpx.MockTransport`. No cluster, network, or LLM key required.
+in-memory `httpx.MockTransport`. No cluster, network, or LLM key required. This
+is what CI runs (`.github/workflows/unit-tests.yml`, Python 3.11–3.13).
+
+`tests/integration` runs against the live demo Union cluster and is **manual**
+(skipped unless `RUN_INTEGRATION=1`):
+
+```bash
+union create login --auth device-flow --host demo.hosted.unionai.cloud
+RUN_INTEGRATION=1 pytest tests/integration -m integration -s
+```
+
+See [`tests/integration/README.md`](tests/integration/README.md) for details.

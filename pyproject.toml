@@ -32,7 +32,13 @@ packages = ["src/flyte_agent_loop"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# Default collection is the hermetic unit suite. Integration tests live under
+# tests/integration, are marked `integration`, and only run when explicitly
+# targeted (see tests/integration/README.md).
+testpaths = ["tests/unit"]
+markers = [
+    "integration: hits a live Union/Flyte cluster; run manually, not in CI.",
+]
 
 [tool.ruff]
 line-length = 110
