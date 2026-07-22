@@ -30,6 +30,49 @@ def _is_sha(ref: str) -> bool:
     return bool(_SHA_RE.match(ref))
 
 
+# Signals that a PR is "associated" with an issue:
+#  - the agent's own head-branch convention ``agent/issue-<N>-...``, and
+#  - GitHub closing keywords (plus our "Implements") followed by ``#<N>`` in the body.
+_ISSUE_BRANCH_RE = re.compile(r"agent/issue-(\d+)")
+_CLOSING_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|implement(?:s|ed)?)\s+#(\d+)"
+)
+
+
+def referenced_issue_numbers(pr: dict[str, Any]) -> set[int]:
+    """Issue numbers a PR is associated with (via head branch or closing keywords)."""
+    nums: set[int] = set()
+    for m in _ISSUE_BRANCH_RE.finditer(pr.get("head", "") or ""):
+        nums.add(int(m.group(1)))
+    for m in _CLOSING_RE.finditer(pr.get("body", "") or ""):
+        nums.add(int(m.group(1)))
+    return nums
+
+
+# Hidden marker on the agent's "looks good" (LGTM) approval comment, used to
+# avoid re-posting the approval on every scheduled run.
+LGTM_MARKER = "<!-- flyte-agent-loop:lgtm v1 -->"
+
+
+def needs_lgtm(comments: list[dict[str, Any]], bot_login: str) -> bool:
+    """Whether an approving "looks good" comment should be posted.
+
+    True when no prior LGTM comment exists, or a human (non-bot) comment appeared
+    after the most recent one — i.e. new feedback arrived and a re-review still
+    found the PR good. Prevents re-approving an unchanged PR every run.
+    """
+    last_lgtm = -1
+    last_human = -1
+    for i, c in enumerate(comments):
+        if LGTM_MARKER in (c.get("body") or ""):
+            last_lgtm = i
+        elif (c.get("user") or "") != bot_login:
+            last_human = i
+    if last_lgtm == -1:
+        return True
+    return last_human > last_lgtm
+
+
 @dataclass
 class ClaimResult:
     """Outcome of attempting to claim dibs on an issue or PR."""
@@ -83,6 +126,11 @@ class GitHubClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _put(self, path: str, json: Any) -> Any:
+        resp = self._http.put(path, json=json)
+        resp.raise_for_status()
+        return resp.json()
+
     # -- identity ------------------------------------------------------------
     def authenticated_login(self) -> str:
         """Return the login of the token's owner (used to find agent PRs)."""
@@ -128,6 +176,24 @@ class GitHubClient:
     def add_comment(self, number: int, body: str) -> dict[str, Any]:
         return self._post(f"/repos/{self.repo}/issues/{number}/comments", {"body": body})
 
+    def post_lgtm(self, number: int, summary: str = "") -> bool:
+        """Post an approving "looks good" comment on a PR, deduped via marker.
+
+        Skips (returns ``False``) when the PR has already been approved and no new
+        human comment has arrived since; otherwise posts and returns ``True``.
+        """
+        bot = self.authenticated_login()
+        if not needs_lgtm(self.list_comments(number), bot):
+            return False
+        body = (
+            f"{LGTM_MARKER}\n\U0001f916 **flyte-agent-loop** reviewed this PR — the changes look "
+            f"good and no further changes are needed."
+        )
+        if summary:
+            body += f"\n\n{summary}"
+        self.add_comment(number, body)
+        return True
+
     # -- pull requests -------------------------------------------------------
     def list_pull_requests(self, author: str | None = None) -> list[dict[str, Any]]:
         """Open PRs, optionally filtered to those authored by ``author``."""
@@ -150,6 +216,13 @@ class GitHubClient:
             prs = [pr for pr in prs if pr["author"] == author]
         return prs
 
+    def issues_with_open_prs(self) -> set[int]:
+        """Issue numbers that already have an associated *open* PR (any author)."""
+        refs: set[int] = set()
+        for pr in self.list_pull_requests():
+            refs |= referenced_issue_numbers(pr)
+        return refs
+
     def get_pull_request(self, number: int) -> dict[str, Any]:
         pr = self._get(f"/repos/{self.repo}/pulls/{number}")
         return {
@@ -170,6 +243,20 @@ class GitHubClient:
             for c in raw
         ]
 
+    def list_pr_files(self, number: int) -> list[dict[str, Any]]:
+        """Files changed by a PR, with their diff patches (for code review)."""
+        raw = self._get(f"/repos/{self.repo}/pulls/{number}/files", per_page=100)
+        return [
+            {
+                "path": f["filename"],
+                "status": f["status"],
+                "additions": f.get("additions", 0),
+                "deletions": f.get("deletions", 0),
+                "patch": f.get("patch", ""),
+            }
+            for f in raw
+        ]
+
     def open_pull_request(self, *, title: str, head: str, base: str, body: str) -> dict[str, Any]:
         pr = self._post(
             f"/repos/{self.repo}/pulls",
@@ -186,25 +273,70 @@ class GitHubClient:
         return self._get(f"/repos/{self.repo}")["default_branch"]
 
     def read_file(self, path: str, ref: str) -> str:
-        """Return the decoded text content of a file at ``ref``."""
-        data = self._get(f"/repos/{self.repo}/contents/{path}", ref=ref)
+        """Return the decoded text content of a file at ``ref``.
+
+        Raises :class:`FileNotFoundError` if the file (or ref) does not exist —
+        a normal condition when the agent explores a repo before creating files.
+        """
+        try:
+            data = self._get(f"/repos/{self.repo}/contents/{path}", ref=ref)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 409):
+                raise FileNotFoundError(f"{path} not found at {ref}") from exc
+            raise
         if isinstance(data, list):
-            raise ValueError(f"{path} is a directory, not a file")
+            raise IsADirectoryError(f"{path} is a directory, not a file")
         return base64.b64decode(data["content"]).decode("utf-8")
 
     def list_files(self, ref: str, subdir: str = "") -> list[str]:
         """List file paths in the repo tree at ``ref`` (recursive).
 
         ``ref`` may be a branch name (including ones containing ``/`` such as
-        ``agent/issue-5``) or a full commit SHA.
+        ``agent/issue-5``) or a full commit SHA. Returns ``[]`` for an empty
+        repository or a ref/tree that does not exist yet.
         """
-        sha = ref if _is_sha(ref) else self.get_ref_sha(ref)
-        tree = self._get(f"/repos/{self.repo}/git/trees/{sha}", recursive=1)
+        try:
+            sha = ref if _is_sha(ref) else self.get_ref_sha(ref)
+            tree = self._get(f"/repos/{self.repo}/git/trees/{sha}", recursive=1)
+        except httpx.HTTPStatusError as exc:
+            # 409 = empty repository (no commits); 404 = ref/tree missing.
+            if exc.response.status_code in (404, 409):
+                return []
+            raise
         paths = [e["path"] for e in tree.get("tree", []) if e["type"] == "blob"]
         if subdir:
             prefix = subdir.rstrip("/") + "/"
             paths = [p for p in paths if p.startswith(prefix)]
         return paths
+
+    def branch_exists(self, branch: str) -> bool:
+        """Whether ``branch`` has a commit (False for an empty repo)."""
+        try:
+            self.get_ref_sha(branch)
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 409):
+                return False
+            raise
+
+    def ensure_base_branch(self, branch: str) -> None:
+        """Guarantee ``branch`` exists with at least one commit.
+
+        A brand-new GitHub repo has no commits, so there is nothing to branch a
+        PR off of. This seeds an initial commit on ``branch`` (via the Contents
+        API, which initializes an empty repo) so downstream branch/PR creation
+        works. No-op when the branch already exists.
+        """
+        if self.branch_exists(branch):
+            return
+        content = base64.b64encode(
+            b"# Initialized by flyte-agent-loop\n\nThis commit seeds the default "
+            b"branch so the agent can open pull requests against it.\n"
+        ).decode()
+        self._put(
+            f"/repos/{self.repo}/contents/README.md",
+            {"message": "Initialize repository", "content": content, "branch": branch},
+        )
 
     def create_branch(self, new_branch: str, from_branch: str) -> str:
         base_sha = self.get_ref_sha(from_branch)

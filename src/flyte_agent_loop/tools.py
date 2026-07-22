@@ -56,6 +56,13 @@ async def read_pr_comments(pr_number: int) -> dict[str, Any]:
 
 
 @env.task
+async def read_pr_changes(pr_number: int) -> list[dict[str, Any]]:
+    """List the files a PR changes, with their diff patches — the basis for a code review."""
+    with _client() as gh:
+        return gh.list_pr_files(pr_number)
+
+
+@env.task
 async def list_repo_files(subdir: str = "") -> list[str]:
     """List file paths in the repo's default branch, optionally under ``subdir``."""
     with _client() as gh:
@@ -64,9 +71,16 @@ async def list_repo_files(subdir: str = "") -> list[str]:
 
 @env.task
 async def read_repo_file(path: str, ref: str = "") -> str:
-    """Read a repo file's text content at ``ref`` (default branch when empty)."""
+    """Read a repo file's text content at ``ref`` (default branch when empty).
+
+    Returns a ``(not found: ...)`` marker instead of failing when the file does
+    not exist — a normal condition when the agent explores a new/empty repo.
+    """
     with _client() as gh:
-        return gh.read_file(path, ref or gh.default_branch())
+        try:
+            return gh.read_file(path, ref or gh.default_branch())
+        except FileNotFoundError as exc:
+            return f"(not found: {exc})"
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +101,7 @@ async def open_pr_with_changes(
     """
     with _client() as gh:
         base = gh.default_branch()
+        gh.ensure_base_branch(base)  # seed an initial commit if the repo is empty
         gh.create_branch(branch, base)
         gh.commit_files(
             branch=branch,
@@ -119,5 +134,11 @@ async def push_changes_to_pr(
 # durable, tracked write actions. This enforces the "implement -> verify ->
 # write" ordering from the spec.
 ISSUE_BUILDER_TOOLS = [read_issue, read_issue_comments, read_repo_file, list_repo_files]
-PR_REVIEWER_TOOLS = [read_pr, read_pr_comments, read_repo_file, list_repo_files]
-VERIFIER_TOOLS = [read_issue, read_pr, read_repo_file, list_repo_files]
+PR_REVIEWER_TOOLS = [read_pr, read_pr_comments, read_pr_changes, read_repo_file, list_repo_files]
+
+# Verifier tools are scoped to the verification context. The issue verifier runs
+# in pipeline 1 BEFORE any PR exists, so it must NOT have PR tools (otherwise the
+# model may call read_pr on a not-yet-created PR and 404). The PR verifier runs in
+# pipeline 2 against an existing PR.
+ISSUE_VERIFIER_TOOLS = [read_issue, read_issue_comments, read_repo_file, list_repo_files]
+PR_VERIFIER_TOOLS = [read_pr, read_pr_comments, read_pr_changes, read_repo_file, list_repo_files]

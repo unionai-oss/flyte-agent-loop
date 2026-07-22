@@ -133,8 +133,27 @@ not mistaken for guarantees:
   compaction/retention step would be needed for long-lived deployments.
 - **Blocking I/O.** The GitHub client is synchronous `httpx`; calls block the
   task's event loop. Fine for these single-flight tasks, not for high fan-out.
-- **No GitHub retry/backoff.** Tasks run with `retries=0`; transient 5xx / rate
-  limits fail the run (the next scheduled fire retries the work).
+- **No GitHub retry/backoff.** Tasks run with `retries=0`. Transient failures do
+  not crash the task, though: each pipeline wraps its flow in a top-level handler
+  that releases the dibs (so a future scheduled fire can retry) and returns an
+  `error` RunRecord instead. Adding a backoff/retry on the GitHub calls
+  themselves would reduce how often that path is hit.
+
+## Stages & error recovery
+
+Each pipeline task chunks its work into named stages via `flyte.group(...)`
+(`claim` → `build`/`review` → `verify` → `open_pr`/`push`, and
+`load` → `ingest` → `evaluate` for evals). Every agent run and tool sub-action
+dispatched inside a stage is grouped under that name in the Flyte UI, so a run's
+timeline reads as discrete phases rather than a flat list of actions.
+
+The whole flow is wrapped in a top-level `try/except`. On any runtime error
+(a GitHub 4xx/5xx, an agent failure, a bad tool call) the pipeline: logs it,
+surfaces it in the report, **releases the dibs** on the claimed issue/PR so a
+later run can retry, and returns an `error` RunRecord. Persisting the record and
+flushing the report are themselves best-effort, so a memory/report hiccup can't
+turn a completed run into a task crash. Net effect: a single bad run degrades to
+a recorded error instead of a hard failure, and the loop keeps going.
 
 ## Testing strategy
 

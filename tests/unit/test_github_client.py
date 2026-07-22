@@ -153,6 +153,164 @@ def test_list_files_resolves_slash_branch_via_ref_not_as_sha():
     assert ("GET", "/repos/acme/widgets/git/ref/heads/agent/issue-5") in calls
 
 
+def _client_with(handler):
+    settings = make_settings()
+    http = httpx.Client(base_url=settings.github_api_url, transport=httpx.MockTransport(handler))
+    return GitHubClient(settings, client=http)
+
+
+def test_list_files_returns_empty_for_empty_repo_409():
+    # An empty repo returns 409 on git/ref/heads/<branch>.
+    def handler(request):
+        if request.url.path.endswith("/git/ref/heads/main"):
+            return httpx.Response(409, json={"message": "Git Repository is empty."})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        assert gh.list_files("main") == []
+
+
+def test_read_file_raises_file_not_found_on_404():
+    def handler(request):
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    with _client_with(handler) as gh:
+        with pytest.raises(FileNotFoundError):
+            gh.read_file("README.md", "main")
+
+
+def test_branch_exists_false_on_empty_repo():
+    def handler(request):
+        return httpx.Response(409, json={"message": "Git Repository is empty."})
+
+    with _client_with(handler) as gh:
+        assert gh.branch_exists("main") is False
+
+
+def test_ensure_base_branch_seeds_empty_repo():
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/git/ref/heads/main"):
+            return httpx.Response(409, json={"message": "Git Repository is empty."})
+        if request.method == "PUT" and request.url.path.endswith("/contents/README.md"):
+            return httpx.Response(201, json={"content": {"path": "README.md"}})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        gh.ensure_base_branch("main")
+    # It seeded an initial commit via the Contents API.
+    assert ("PUT", "/repos/acme/widgets/contents/README.md") in calls
+
+
+def test_ensure_base_branch_noop_when_branch_exists():
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith("/git/ref/heads/main"):
+            return httpx.Response(200, json={"object": {"sha": "a" * 40}})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        gh.ensure_base_branch("main")
+    # No PUT (seed) happened because the branch already exists.
+    assert not any(method == "PUT" for method, _ in calls)
+
+
+def test_referenced_issue_numbers_from_branch_and_keywords():
+    from flyte_agent_loop.github_client import referenced_issue_numbers
+
+    # agent branch convention
+    assert referenced_issue_numbers({"head": "agent/issue-12-add-foo", "body": ""}) == {12}
+    # closing keywords + our "Implements"
+    assert referenced_issue_numbers({"head": "feature", "body": "Closes #3"}) == {3}
+    assert referenced_issue_numbers({"head": "x", "body": "fixes #4 and resolves #5"}) == {4, 5}
+    assert referenced_issue_numbers({"head": "x", "body": "Implements #7"}) == {7}
+    # a bare mention (no keyword, non-agent branch) is NOT treated as associated
+    assert referenced_issue_numbers({"head": "x", "body": "see #9 for context"}) == set()
+    # union of branch + body
+    assert referenced_issue_numbers({"head": "agent/issue-1-x", "body": "Closes #2"}) == {1, 2}
+
+
+def test_issues_with_open_prs_aggregates():
+    prs = [
+        {"number": 100, "user": {"login": "u"}, "title": "t", "body": "Closes #1",
+         "head": {"ref": "agent/issue-1-x"}, "base": {"ref": "main"}, "updated_at": "x"},
+        {"number": 101, "user": {"login": "u"}, "title": "t", "body": "Implements #2",
+         "head": {"ref": "feature"}, "base": {"ref": "main"}, "updated_at": "x"},
+    ]
+
+    def handler(request):
+        if request.url.path == "/repos/acme/widgets/pulls":
+            return httpx.Response(200, json=prs)
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        assert gh.issues_with_open_prs() == {1, 2}
+
+
+def test_list_pr_files_returns_paths_and_patches():
+    files = [
+        {"filename": "src/a.py", "status": "modified", "additions": 3, "deletions": 1,
+         "patch": "@@ -1 +1 @@\n-old\n+new"},
+        {"filename": "b.md", "status": "added", "additions": 5, "deletions": 0, "patch": "+docs"},
+    ]
+
+    def handler(request):
+        if request.url.path == "/repos/acme/widgets/pulls/7/files":
+            return httpx.Response(200, json=files)
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        out = gh.list_pr_files(7)
+    assert [f["path"] for f in out] == ["src/a.py", "b.md"]
+    assert out[0]["patch"].startswith("@@") and out[0]["status"] == "modified"
+
+
+def test_needs_lgtm_dedup_logic():
+    from flyte_agent_loop.github_client import LGTM_MARKER, needs_lgtm
+
+    bot = "agent-bot"
+    lgtm = {"user": bot, "body": f"{LGTM_MARKER}\nlooks good"}
+    human = {"user": "alice", "body": "please tweak this"}
+    bot_other = {"user": bot, "body": "dibs claim marker"}
+
+    # No prior approval -> should post.
+    assert needs_lgtm([], bot) is True
+    assert needs_lgtm([human], bot) is True
+    # Already approved, nothing since -> skip.
+    assert needs_lgtm([human, lgtm], bot) is False
+    # Bot's own later comments (dibs, etc.) don't re-trigger.
+    assert needs_lgtm([lgtm, bot_other], bot) is False
+    # A human comment after approval -> re-approve after re-review.
+    assert needs_lgtm([lgtm, human], bot) is True
+
+
+def test_post_lgtm_posts_once_then_skips():
+    posted = []
+    state = {"comments": []}
+
+    def handler(request):
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"login": "agentA"})
+        if request.method == "GET" and request.url.path.endswith("/issues/7/comments"):
+            return httpx.Response(200, json=state["comments"])
+        if request.method == "POST" and request.url.path.endswith("/issues/7/comments"):
+            body = json.loads(request.content)["body"]
+            posted.append(body)
+            state["comments"].append({"user": {"login": "agentA"}, "body": body})
+            return httpx.Response(201, json={"body": body})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        assert gh.post_lgtm(7, "great work") is True   # first time posts
+        assert gh.post_lgtm(7, "great work") is False  # already approved, no new human comment
+    assert len(posted) == 1
+    assert "look good" in posted[0]
+
+
 def test_missing_repo_setting_raises(monkeypatch):
     from flyte_agent_loop.config import load_settings
 

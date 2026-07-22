@@ -33,6 +33,7 @@ from .memory_context import (
     save_ingest_state,
     write_context_digest,
 )
+from .report_style import finalize_report
 
 TRIGGER = flyte.Trigger(
     name="evals_every_10m",
@@ -46,40 +47,53 @@ async def evals() -> dict[str, Any]:
     settings = load_settings()
     rid = run_id()
     now = utcnow()
+    flyte.report.log(f"<h2>evals</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
 
-    # 1. Load run records (with their unique memory-path ids) and the ingestion
-    #    ledger tracking what has already been processed.
-    records_with_ids = await load_run_records_with_ids(settings)
-    records = [rec for _, rec in records_with_ids]
-    state = await load_ingest_state(settings)
+    try:
+        # 1. Load run records (with their unique memory-path ids) and the ingestion
+        #    ledger tracking what has already been processed.
+        with flyte.group("load"):
+            records_with_ids = await load_run_records_with_ids(settings)
+            records = [rec for _, rec in records_with_ids]
+            state = await load_ingest_state(settings)
 
-    # 2. Ingest ONLY records not seen before, so previously ingested issues/PRs
-    #    are never double-counted into the per-target rollup.
-    new_records = select_new_records(records_with_ids, state)
-    state, ingested_count = ingest_new_records(state, new_records, now_iso=iso(now))
-    await save_ingest_state(settings, state)
+        # 2. Ingest ONLY records not seen before, so previously ingested issues/PRs
+        #    are never double-counted into the per-target rollup.
+        with flyte.group("ingest"):
+            new_records = select_new_records(records_with_ids, state)
+            state, ingested_count = ingest_new_records(state, new_records, now_iso=iso(now))
+            await save_ingest_state(settings, state)
 
-    # 3. Evaluate the full history (metrics are a fresh aggregate, not ingestion).
-    summary = evaluate(records)
+        # 3. Evaluate the full history (metrics are a fresh aggregate, not ingestion),
+        #    then refresh the shared context digest fed back to pipelines 1 & 2.
+        with flyte.group("evaluate"):
+            summary = evaluate(records)
+            digest = compact_context(records, summary) + "\n\n" + render_ingested_targets(state)
+            await write_context_digest(settings, digest)
 
-    # 4. Refresh the shared context digest fed back to pipelines 1 & 2. It carries
-    #    the metrics, recent verifier lessons, and the ingested issue/PR rollup.
-    digest = compact_context(records, summary) + "\n\n" + render_ingested_targets(state)
-    await write_context_digest(settings, digest)
+        # 4. Publish the report.
+        tab = flyte.report.get_tab("Evals")
+        tab.replace(render_report_html(summary, records))
+        flyte.report.log(
+            f"<p>{ingested_count} new record(s) ingested this run; "
+            f"{len(state.processed_record_ids)} total across "
+            f"{len(state.targets)} issue(s)/PR(s). Success rate {summary.success_rate:.0%}.</p>"
+        )
+        await finalize_report()
 
-    # 5. Publish the report.
-    tab = flyte.report.get_tab("Evals")
-    tab.replace(render_report_html(summary, records))
-    flyte.report.log(
-        f"<h2>evals</h2><p>run <code>{rid}</code>: {ingested_count} new record(s) ingested "
-        f"this run; {len(state.processed_record_ids)} total across "
-        f"{len(state.targets)} issue(s)/PR(s). Success rate {summary.success_rate:.0%}.</p>"
-    )
-    await flyte.report.flush.aio()
+        return {
+            "repo": settings.repo,
+            "summary": summary.to_dict(),
+            "ingested_this_run": ingested_count,
+            "total_ingested": len(state.processed_record_ids),
+            "targets_tracked": len(state.targets),
+        }
 
-    return {
-        "summary": summary.to_dict(),
-        "ingested_this_run": ingested_count,
-        "total_ingested": len(state.processed_record_ids),
-        "targets_tracked": len(state.targets),
-    }
+    except Exception as exc:  # graceful recovery: report the error instead of crashing
+        flyte.logger.exception("evals failed")
+        flyte.report.log(f"<p style='color:#b00'>pipeline error: {exc}</p>")
+        try:
+            await finalize_report()
+        except Exception:
+            flyte.logger.warning("failed to flush report")
+        return {"repo": settings.repo, "error": str(exc)}

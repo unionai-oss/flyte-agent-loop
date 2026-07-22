@@ -26,9 +26,11 @@ class RunRecord:
     run_id: str
     timestamp: str  # ISO-8601
     action: str  # opened_pr | pushed_fixes | skipped | no_work | error
+    repo: str = ""  # target GitHub repo, "owner/name"
     target_kind: str = ""  # "issue" | "pr"
     target_number: int | None = None
     pr_number: int | None = None
+    pr_url: str = ""  # html_url of the opened/updated PR
     verified: bool = False
     verifier_notes: str = ""
     summary: str = ""
@@ -267,7 +269,7 @@ def render_report_html(summary: EvalSummary, records: Sequence[RunRecord]) -> st
       <li><b>Per pipeline:</b> {html.escape(str(summary.per_pipeline))}</li>
     </ul>
     <h3>Recent runs</h3>
-    <table border="1" cellpadding="4" cellspacing="0">
+    <table>
       <tr><th>Time</th><th>Pipeline</th><th>Action</th><th>Target</th><th>Verified</th><th>Summary</th></tr>
       {rows}
     </table>

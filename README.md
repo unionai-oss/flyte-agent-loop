@@ -128,8 +128,8 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
    [Create a GitHub token](#create-a-github-token)):
 
    ```bash
-   flyte create secret github-token       --value github_pat_xxx
-   flyte create secret anthropic-api-key  --value sk-ant-xxx
+   flyte create secret --project flytesnacks --domain development github-token       --value github_pat_xxx
+   flyte create secret --project flytesnacks --domain development anthropic-api-key  --value sk-ant-xxx
    ```
 
 4. **Deploy the pipelines** (uses `~/.flyte/config.yaml` via
