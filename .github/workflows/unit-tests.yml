@@ -25,8 +25,10 @@ jobs:
         # setup-uv installs a uv-managed (externally-managed) interpreter, so
         # `--system` is rejected. Install into a project venv and invoke the
         # venv's binaries directly (avoids `uv run` re-syncing away the dev extra).
+        # `--clear` recreates the venv even though setup-uv (with python-version)
+        # already created a `.venv`, so `uv venv` doesn't error on the existing dir.
         run: |
-          uv venv --python ${{ matrix.python-version }}
+          uv venv --python ${{ matrix.python-version }} --clear
           uv pip install -e ".[dev]"
 
       - name: Lint
