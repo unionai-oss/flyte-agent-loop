@@ -55,6 +55,8 @@ def _passthrough_env_vars() -> dict[str, str]:
         config.ENV_DIBS_TTL_MINUTES,
         config.ENV_MEMORY_KEY,
         config.ENV_GITHUB_API,
+        config.ENV_MAX_TOKENS,
+        config.ENV_MAX_TRIES,
     ]
     return {k: os.environ[k] for k in keys if os.environ.get(k)}
 

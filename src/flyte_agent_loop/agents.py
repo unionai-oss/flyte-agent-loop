@@ -16,6 +16,7 @@ from flyte.ai.agents import Agent
 from typing import Any, Sequence
 
 from .config import Settings
+from .llm import build_call_llm
 from .tools import ISSUE_BUILDER_TOOLS, ISSUE_VERIFIER_TOOLS, PR_REVIEWER_TOOLS
 
 # ---------------------------------------------------------------------------
@@ -24,31 +25,25 @@ from .tools import ISSUE_BUILDER_TOOLS, ISSUE_VERIFIER_TOOLS, PR_REVIEWER_TOOLS
 _BUILDER_INSTRUCTIONS = """\
 You are an autonomous software engineer working a GitHub issue to completion.
 
-Your objective, given an issue number:
-1. Read the issue (and its comments) to understand the requirements.
-2. Explore the repository (list files, read relevant files) to match existing
+Workflow, given an issue number:
+1. Read the issue (and its comments) to understand exactly what it asks for.
+2. Explore the repository (list_repo_files, read_repo_file) to match existing
    conventions.
-3. Design the change to match what the issue actually asks for — scope your work
-   to the issue, and include only the parts it warrants:
-   - the implementation itself,
-   - tests when you add or change behavior,
-   - a usage example and/or documentation when the change is user-facing.
-   Not every issue needs all of these: a small fix, config tweak, or doc-only
-   issue may need none of the extras, while a new feature usually needs tests.
-   Don't pad the PR with artifacts the issue doesn't call for.
+3. Implement the change, scoped to what the issue actually asks for — include only
+   the parts it warrants: tests when you add or change behavior, and an example
+   and/or documentation when the change is user-facing. A small fix, config tweak,
+   or doc-only issue may need none of the extras; a new feature usually needs
+   tests. Don't pad the PR with artifacts the issue doesn't call for.
+4. Stage each file for the PR by calling `stage_file(path, content)` with the
+   COMPLETE file content — one call per file (staging the same path overwrites it;
+   `unstage_file(path)` removes one). Never paste file contents into your text
+   replies; always use `stage_file`.
+5. When ALL files are staged, call `submit_implementation(branch, title, body,
+   summary)` to finalize, using a branch like `agent/issue-<number>-<slug>`.
 
-You do NOT open the pull request yourself; a verifier reviews your plan first.
-Once your design is complete, respond with ONLY a JSON object on the final line:
-
-{"action": "implement",
- "branch": "agent/issue-<number>-<slug>",
- "title": "<PR title>",
- "body": "<PR description>",
- "files": {"path/to/file.py": "<full file content>", ...},
- "summary": "<what you did, one or two sentences>"}
-
-Provide COMPLETE file contents (not diffs) in "files". If no code change is
-warranted, respond with {"action": "skip", "summary": "<why>"}.
+You do NOT open the pull request yourself; a verifier reviews the staged change
+first. If no code change is warranted, call `skip_issue(reason)` instead. After
+submitting (or skipping), reply with a brief plain-text summary.
 """
 
 _REVIEWER_INSTRUCTIONS = """\
@@ -56,31 +51,25 @@ You are an autonomous code reviewer for a pull request the agent previously
 opened. You always perform your own review of the code — human review comments,
 if any, are ADDITIONAL guidance, never a prerequisite for reviewing.
 
-Your objective, given a PR number:
+Workflow, given a PR number:
 1. Read the PR and the files it changes with their diff (read_pr, read_pr_changes),
    and the current files on the PR head branch as needed to understand the change.
 2. Read the PR's comments (conversation + inline review). Treat any human comments
    as extra guidance/context. Ignore the bot's own dibs/claim comments.
 3. Review the change yourself for CONCRETE problems: correctness bugs, missing or
    incorrect tests for behavior it changes, missing docs/examples for user-facing
-   changes, and anything raised in review comments that is not yet addressed.
-   Judge by what the change warrants — don't demand tests/docs/examples a small or
-   non-user-facing change doesn't need.
-4. If you find concrete problems (or there are unaddressed review comments), design
-   tightly-scoped fixes. Do NOT invent stylistic nitpicks or rewrite working code.
+   changes, and anything raised in review comments not yet addressed. Judge by what
+   the change warrants — don't demand tests/docs/examples a small or non-user-facing
+   change doesn't need, and don't invent stylistic nitpicks or rewrite working code.
+4. For each file you need to change, call `stage_file(path, content)` with the
+   COMPLETE new file content — one call per file (`unstage_file(path)` to undo).
+   Never paste file contents into your text replies; always use `stage_file`.
+5. When all fixes are staged, call `submit_fix(message, summary, addressed)` where
+   `addressed` lists each problem/comment you handled and how.
 
-You do NOT push changes yourself; a verifier reviews your plan first. Respond
-with ONLY a JSON object on the final line:
-
-{"action": "fix",
- "message": "<commit message>",
- "files": {"path/to/file.py": "<full file content>", ...},
- "addressed": ["<problem you found or comment you addressed, and how>", ...],
- "summary": "<one or two sentences>"}
-
-Provide COMPLETE file contents (not diffs). If the PR is already correct and
-complete with nothing actionable, respond with
-{"action": "no_changes", "summary": "<why the PR is already good>"}.
+You do NOT push changes yourself; a verifier reviews the staged fixes first. If the
+PR is already correct and complete with nothing actionable, call
+`no_changes(reason)` instead. After submitting, reply with a brief plain-text summary.
 """
 
 _VERIFIER_INSTRUCTIONS = """\
@@ -139,23 +128,33 @@ def _with_context(instructions: str, context: str) -> str:
     return f"{instructions}\n\n--- Shared memory from prior runs ---\n{context}\n"
 
 
-def build_issue_agent(settings: Settings, context: str = "") -> Agent:
+def build_issue_agent(
+    settings: Settings, context: str = "", extra_tools: Sequence[Any] = ()
+) -> Agent:
     return Agent(
         name="issue-builder",
         instructions=_with_context(_BUILDER_INSTRUCTIONS, context),
         model=_model(settings),
-        tools=ISSUE_BUILDER_TOOLS,
-        max_turns=30,
+        tools=[*ISSUE_BUILDER_TOOLS, *extra_tools],
+        max_turns=40,
+        # Sequential tool calls: each stage_file turn emits one file, bounding
+        # per-turn output, and the in-process staging state mutates race-free.
+        parallel_tool_calls=False,
+        call_llm=build_call_llm(settings.max_tokens),
     )
 
 
-def build_reviewer_agent(settings: Settings, context: str = "") -> Agent:
+def build_reviewer_agent(
+    settings: Settings, context: str = "", extra_tools: Sequence[Any] = ()
+) -> Agent:
     return Agent(
         name="pr-reviewer",
         instructions=_with_context(_REVIEWER_INSTRUCTIONS, context),
         model=_model(settings),
-        tools=PR_REVIEWER_TOOLS,
-        max_turns=30,
+        tools=[*PR_REVIEWER_TOOLS, *extra_tools],
+        max_turns=40,
+        parallel_tool_calls=False,
+        call_llm=build_call_llm(settings.max_tokens),
     )
 
 
@@ -172,6 +171,7 @@ def build_verifier_agent(settings: Settings, tools: Sequence[Any] = ISSUE_VERIFI
         model=_model(settings),
         tools=tools,
         max_turns=12,
+        call_llm=build_call_llm(settings.max_tokens),
     )
 
 

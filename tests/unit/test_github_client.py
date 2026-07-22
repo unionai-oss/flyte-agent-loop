@@ -22,6 +22,8 @@ def make_settings(**kw) -> Settings:
         dibs_ttl_minutes=30,
         memory_key="k",
         github_api_url="https://api.github.com",
+        max_tokens=32000,
+        max_tries=5,
     )
     base.update(kw)
     return Settings(**base)
@@ -309,6 +311,9 @@ def test_post_lgtm_posts_once_then_skips():
         assert gh.post_lgtm(7, "great work") is False  # already approved, no new human comment
     assert len(posted) == 1
     assert "look good" in posted[0]
+    # The approval comment explains how to re-activate the agent.
+    assert "/flyte-agent-loop" in posted[0]
+    assert "review it again" in posted[0].lower() or "take another look" in posted[0].lower()
 
 
 def test_missing_repo_setting_raises(monkeypatch):

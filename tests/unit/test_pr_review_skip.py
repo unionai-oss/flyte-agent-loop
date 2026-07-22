@@ -1,50 +1,57 @@
-"""Tests for the 'skip an already-approved PR' decision in pipeline_pr_review."""
+"""Tests for the approved-PR skip / re-activation logic in pr_review."""
 
-from datetime import datetime, timedelta, timezone
+from flyte_agent_loop.github_client import (
+    LGTM_MARKER,
+    REACTIVATE_COMMAND,
+    approved_awaiting_command,
+)
 
-from flyte_agent_loop import dibs
-from flyte_agent_loop.github_client import LGTM_MARKER
-from flyte_agent_loop.pipeline_pr_review import _is_approved_and_held
-
-NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
-AGENT = "agentA"  # dibs agent id
-BOT = "agent-bot"  # github login
-
-
-def _claim(minutes=30):
-    # dibs claim comment authored by the bot
-    return {"user": BOT, "body": dibs.render_claim("pr", AGENT, "r1", NOW + timedelta(minutes=minutes))}
+BOT = "agent-bot"
 
 
 def _lgtm():
-    return {"user": BOT, "body": f"{LGTM_MARKER}\nlooks good"}
+    # The bot's approval comment includes the re-activation instructions, which
+    # mention the command — this must NOT count as a human command.
+    return {"user": BOT, "body": f"{LGTM_MARKER}\nlooks good; comment {REACTIVATE_COMMAND} to re-activate"}
 
 
-def _human():
-    return {"user": "alice", "body": "one more thing please"}
+def _human(body):
+    return {"user": "alice", "body": body}
 
 
-def test_skip_when_held_and_approved_no_new_feedback():
-    comments = [_claim(), _lgtm()]
-    assert _is_approved_and_held(comments, AGENT, BOT, NOW + timedelta(minutes=5)) is True
+def test_not_approved_is_not_skipped():
+    # No LGTM yet -> normal flow, don't skip.
+    assert approved_awaiting_command([], BOT) is False
+    assert approved_awaiting_command([_human("please fix this")], BOT) is False
 
 
-def test_not_skip_when_claim_expired():
-    comments = [_claim(minutes=30), _lgtm()]
-    # 31 min later the claim has lapsed -> re-review is allowed.
-    assert _is_approved_and_held(comments, AGENT, BOT, NOW + timedelta(minutes=31)) is False
+def test_approved_with_nothing_since_is_skipped():
+    assert approved_awaiting_command([_human("old note"), _lgtm()], BOT) is True
 
 
-def test_not_skip_when_human_comments_after_approval():
-    comments = [_claim(), _lgtm(), _human()]
-    assert _is_approved_and_held(comments, AGENT, BOT, NOW + timedelta(minutes=5)) is False
+def test_approved_then_plain_human_comment_still_skipped():
+    # A regular human comment does NOT re-activate — only the command does.
+    comments = [_lgtm(), _human("thanks, looks great!")]
+    assert approved_awaiting_command(comments, BOT) is True
 
 
-def test_not_skip_when_held_but_not_yet_approved():
-    comments = [_claim()]  # claimed but no LGTM yet
-    assert _is_approved_and_held(comments, AGENT, BOT, NOW + timedelta(minutes=5)) is False
+def test_approved_then_reactivation_command_is_not_skipped():
+    comments = [_lgtm(), _human(f"{REACTIVATE_COMMAND} please re-check error handling")]
+    assert approved_awaiting_command(comments, BOT) is False
 
 
-def test_not_skip_when_not_held():
-    comments = [_lgtm()]  # approved but no active claim
-    assert _is_approved_and_held(comments, AGENT, BOT, NOW) is False
+def test_reactivation_command_is_case_insensitive():
+    comments = [_lgtm(), _human("/Flyte-Agent-Loop take another look")]
+    assert approved_awaiting_command(comments, BOT) is False
+
+
+def test_command_before_approval_does_not_reactivate():
+    # A command that predates the latest approval is already handled.
+    comments = [_human(f"{REACTIVATE_COMMAND} do X"), _lgtm()]
+    assert approved_awaiting_command(comments, BOT) is True
+
+
+def test_bot_mentioning_command_does_not_reactivate():
+    # The bot's own later comment mentioning the command must not re-trigger.
+    comments = [_lgtm(), {"user": BOT, "body": f"note: {REACTIVATE_COMMAND} is how to re-activate"}]
+    assert approved_awaiting_command(comments, BOT) is True

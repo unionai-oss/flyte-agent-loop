@@ -23,6 +23,20 @@ import flyte.report
 _STYLE_ID = "flyte-agent-loop-style"
 _MEMORY_TAB = "Shared Memory"
 
+
+def link(url: str, text: str) -> str:
+    """Render a report anchor that opens in a NEW browser tab when clicked.
+
+    ``target="_blank"`` breaks the link out of the report iframe into a new tab;
+    ``rel="noopener noreferrer"`` is the standard safety pair. Falls back to plain
+    escaped text when there is no URL.
+    """
+    safe_text = _html.escape(str(text))
+    if not url:
+        return safe_text
+    safe_url = _html.escape(str(url), quote=True)
+    return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_text}</a>'
+
 # Nav-tab renames, keyed by the tab's current dict key.
 _TAB_RENAMES = {"main": "Result", "Agent": "Agent Traces"}
 
@@ -97,6 +111,40 @@ async def finalize_report() -> None:
     except Exception:
         flyte.logger.warning("failed to finalize report styling")
     await flyte.report.flush.aio()
+
+
+async def flush_live() -> None:
+    """Inject the CSS (idempotent) and flush WITHOUT renaming tabs.
+
+    Used for per-event flushes during a run: tab renaming is deferred to
+    :func:`finalize_report` so mid-run logging can't recreate a stale ``main`` tab.
+    """
+    try:
+        _inject_css(flyte.report.current_report())
+    except Exception:
+        flyte.logger.debug("live report css injection failed", exc_info=True)
+    await flyte.report.flush.aio()
+
+
+def install_live_report_flush() -> None:
+    """Flush the report after every agent event, so it updates live as agents work.
+
+    The agent harness chains onto whatever callback is set in the
+    ``flyte.ai.agents.agent_progress_cb`` contextvar (it calls that callback before
+    rendering each event into the report timeline). Setting this flush callback
+    there makes every agent event — tool start/end, message, turn, done — trigger a
+    report flush. It survives across the multiple agent runs in a pipeline because
+    the harness restores the previous callback after each run.
+    """
+    from flyte.ai.agents import agent_progress_cb
+
+    async def _flush_cb(event) -> None:  # event: flyte.ai.agents.AgentEvent
+        try:
+            await flush_live()
+        except Exception:  # never let report I/O break the agent loop
+            flyte.logger.debug("live report flush failed", exc_info=True)
+
+    agent_progress_cb.set(_flush_cb)
 
 
 # ---------------------------------------------------------------------------

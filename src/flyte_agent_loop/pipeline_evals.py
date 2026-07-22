@@ -47,6 +47,8 @@ async def evals() -> dict[str, Any]:
     settings = load_settings()
     rid = run_id()
     now = utcnow()
+    log = flyte.logger
+    log.info("evals start: run=%s repo=%s", rid, settings.repo)
     flyte.report.log(f"<h2>evals</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
 
     try:
@@ -56,6 +58,8 @@ async def evals() -> dict[str, Any]:
             records_with_ids = await load_run_records_with_ids(settings)
             records = [rec for _, rec in records_with_ids]
             state = await load_ingest_state(settings)
+        log.info("evals: loaded %d run record(s); %d already ingested",
+                 len(records), len(state.processed_record_ids))
 
         # 2. Ingest ONLY records not seen before, so previously ingested issues/PRs
         #    are never double-counted into the per-target rollup.
@@ -63,6 +67,7 @@ async def evals() -> dict[str, Any]:
             new_records = select_new_records(records_with_ids, state)
             state, ingested_count = ingest_new_records(state, new_records, now_iso=iso(now))
             await save_ingest_state(settings, state)
+        log.info("evals: ingested %d new record(s) this run", ingested_count)
 
         # 3. Evaluate the full history (metrics are a fresh aggregate, not ingestion),
         #    then refresh the shared context digest fed back to pipelines 1 & 2.
@@ -80,6 +85,8 @@ async def evals() -> dict[str, Any]:
             f"{len(state.targets)} issue(s)/PR(s). Success rate {summary.success_rate:.0%}.</p>"
         )
         await finalize_report()
+        log.info("evals done: %d total runs, success_rate=%.0f%%, %d target(s) tracked",
+                 summary.total_runs, summary.success_rate * 100, len(state.targets))
 
         return {
             "repo": settings.repo,

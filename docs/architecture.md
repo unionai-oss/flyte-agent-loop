@@ -33,12 +33,14 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
 
 ### 1. `issue_to_pr` — every 5 minutes (`pipeline_issue_to_pr.py`)
 
-1. **Dibs.** List open issues; for the first one with no active claim, post a
-   dibs marker comment (`try_claim`). Concurrent/future runs see the marker and
-   skip it until it expires (`FLYTE_AGENT_DIBS_TTL_MINUTES`) or is released.
-2. **Build.** A `flyte.ai.agents.Agent` (read-only GitHub tools + the shared
-   context digest) designs the change — implementation, **tests, example, and
-   docs** — and returns a JSON change plan.
+1. **Dibs.** List open issues; skip any that already have an associated open PR,
+   then for the first one with no active claim post a dibs marker comment
+   (`try_claim`). Concurrent/future runs see the marker and skip it until it
+   expires (`FLYTE_AGENT_DIBS_TTL_MINUTES`) or is released.
+2. **Build.** A `flyte.ai.agents.Agent` (read GitHub tools + the shared context
+   digest) implements the change scoped to what the issue asks for, **staging each
+   file via a `stage_file` tool** rather than returning one giant JSON blob (see
+   *File staging* below).
 3. **Verify.** A stricter verifier sub-agent checks the plan for correctness and
    completeness, returning a structured `{"verified": bool, "notes": ...}`.
 4. **Create PR.** Only if verified, the pipeline opens a PR
@@ -82,6 +84,25 @@ rollup must be incremental — otherwise every fire would re-summarize the same
 already-seen records. The `processed_record_ids` set (keyed by the immutable
 `runs/<ts>_<run>.json` path) is the dedup boundary; `ingest_count` on each target
 reflects only genuinely new records touching that issue/PR.
+
+## File staging (why not one JSON blob)
+
+The builder/reviewer agents produce a change as a set of full file contents. Early
+versions had the agent emit everything as a single JSON object in its final
+message — but for any non-trivial change that output exceeds the model's max output
+tokens (litellm defaults to only 4096!) and gets truncated into invalid JSON,
+silently dropping the run into `no_work` (no verify, no PR).
+
+Instead (`staging.py`), the agent calls **`stage_file(path, content)` once per
+file**, then `submit_implementation(...)` / `submit_fix(...)`. These are *plain
+closure tools* — the harness invokes them **in-process** (unlike `@env.task`
+tools, which dispatch as separate actions), so they accumulate into a
+`ChangeStage` the pipeline owns. With `parallel_tool_calls=False`, staging is
+sequential: each turn's output is bounded by the largest single file (not the sum),
+and the shared state mutates race-free. After the run the pipeline reads
+`stage.to_plan()` directly — no free-text parsing to truncate. The LLM callback
+(`llm.py`) also sets a generous `max_tokens` (clamped to the model max) as a second
+layer of defense.
 
 ## Dibs (cooperative locking)
 

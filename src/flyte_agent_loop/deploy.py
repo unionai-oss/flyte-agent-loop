@@ -23,6 +23,7 @@ Union project before the scheduled runs will succeed.
 from __future__ import annotations
 
 import argparse
+import logging
 
 import flyte
 
@@ -50,7 +51,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    flyte.init_from_config()
+    flyte.init_from_config(log_level=logging.INFO)
 
     if args.run:
         run = flyte.run(PIPELINES[args.run])

@@ -53,6 +53,9 @@ def referenced_issue_numbers(pr: dict[str, Any]) -> set[int]:
 # avoid re-posting the approval on every scheduled run.
 LGTM_MARKER = "<!-- flyte-agent-loop:lgtm v1 -->"
 
+# The command a human comments to re-activate the reviewer on an approved PR.
+REACTIVATE_COMMAND = "/flyte-agent-loop"
+
 
 def needs_lgtm(comments: list[dict[str, Any]], bot_login: str) -> bool:
     """Whether an approving "looks good" comment should be posted.
@@ -71,6 +74,30 @@ def needs_lgtm(comments: list[dict[str, Any]], bot_login: str) -> bool:
     if last_lgtm == -1:
         return True
     return last_human > last_lgtm
+
+
+def approved_awaiting_command(comments: list[dict[str, Any]], bot_login: str) -> bool:
+    """Whether an approved PR should be skipped (no re-activation requested).
+
+    Once the reviewer has approved a PR (posted an LGTM), future runs skip it
+    entirely — regardless of dibs TTL — UNLESS a human posts a ``/flyte-agent-loop``
+    command AFTER the last approval. Returns True (skip) when the PR is approved and
+    no such re-activation command has arrived since; False otherwise (not approved,
+    or a re-activation command is pending).
+    """
+    last_lgtm = -1
+    last_command = -1
+    for i, c in enumerate(comments):
+        body = c.get("body") or ""
+        if LGTM_MARKER in body:
+            last_lgtm = i
+        elif (c.get("user") or "") != bot_login and REACTIVATE_COMMAND in body.lower():
+            # A human's re-activation command (the bot's own comments — including the
+            # approval text that mentions the command — are excluded by the author check).
+            last_command = i
+    if last_lgtm == -1:
+        return False  # never approved -> normal flow, don't skip
+    return last_command <= last_lgtm  # approved and no command since -> skip
 
 
 @dataclass
@@ -153,6 +180,7 @@ class GitHubClient:
                 "body": it.get("body") or "",
                 "labels": [lbl["name"] for lbl in it.get("labels", [])],
                 "updated_at": it["updated_at"],
+                "url": it.get("html_url", ""),
             }
             for it in raw
             if "pull_request" not in it  # the issues endpoint also returns PRs
@@ -166,6 +194,7 @@ class GitHubClient:
             "body": it.get("body") or "",
             "labels": [lbl["name"] for lbl in it.get("labels", [])],
             "state": it["state"],
+            "url": it.get("html_url", ""),
         }
 
     def list_comments(self, number: int) -> list[dict[str, Any]]:
@@ -187,7 +216,10 @@ class GitHubClient:
             return False
         body = (
             f"{LGTM_MARKER}\n\U0001f916 **flyte-agent-loop** reviewed this PR — the changes look "
-            f"good and no further changes are needed."
+            f"good and no further changes are needed.\n\n"
+            f"I won't review this PR again on my own. To have me take another look, comment "
+            f"`{REACTIVATE_COMMAND} <your instructions>` — for example, "
+            f"`{REACTIVATE_COMMAND} please re-check the error handling`."
         )
         if summary:
             body += f"\n\n{summary}"
@@ -209,6 +241,7 @@ class GitHubClient:
                 "head": pr["head"]["ref"],
                 "base": pr["base"]["ref"],
                 "updated_at": pr["updated_at"],
+                "url": pr.get("html_url", ""),
             }
             for pr in raw
         ]
@@ -233,6 +266,7 @@ class GitHubClient:
             "head": pr["head"]["ref"],
             "base": pr["base"]["ref"],
             "state": pr["state"],
+            "url": pr.get("html_url", ""),
         }
 
     def list_review_comments(self, number: int) -> list[dict[str, Any]]:

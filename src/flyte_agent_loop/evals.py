@@ -33,6 +33,7 @@ class RunRecord:
     pr_url: str = ""  # html_url of the opened/updated PR
     verified: bool = False
     verifier_notes: str = ""
+    attempts: int = 1  # number of build->verify attempts made
     summary: str = ""
     error: str = ""
 
