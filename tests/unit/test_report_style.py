@@ -40,6 +40,32 @@ def test_md_to_html_escapes_html():
     assert "&lt;script&gt;" in _md_to_html("- <script>alert(1)</script>")
 
 
+def test_render_memory_store_html_groups_and_truncates():
+    from flyte_agent_loop.memory_context import MemoryFile
+    from flyte_agent_loop.report_style import render_memory_store_html
+
+    files = [
+        MemoryFile(store="k-runs", path="runs/a.json", size=7, content='{"x": 1}'),
+        MemoryFile(store="k-context", path="context/digest.md", size=9000, content="# digest\n…"),
+        MemoryFile(store="k-runs", path="… 5 older run file(s) not shown", size=0, content=""),
+    ]
+    html = render_memory_store_html(files)
+    # grouped by store (folder headers)
+    assert "k-runs" in html and "k-context" in html
+    # file paths + sizes shown
+    assert "runs/a.json" in html and "(7 chars)" in html and "(9000 chars)" in html
+    # content is HTML-escaped inside an expandable block
+    assert "&quot;x&quot;: 1" in html and "<details>" in html
+    # the "older files not shown" marker (empty content) renders as a plain row
+    assert "older run file(s) not shown" in html
+
+
+def test_render_memory_store_html_empty():
+    from flyte_agent_loop.report_style import render_memory_store_html
+
+    assert "empty" in render_memory_store_html([])
+
+
 def test_link_opens_new_tab_and_escapes():
     from flyte_agent_loop.report_style import link
 

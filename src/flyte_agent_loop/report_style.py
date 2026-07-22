@@ -200,3 +200,96 @@ def render_memory_tab(context: str) -> None:
         flyte.report.get_tab(_MEMORY_TAB).replace(f'<div class="agent-memory">{body}</div>')
     except Exception:
         flyte.logger.warning("failed to render shared-memory report tab")
+
+
+def render_memory_store_html(files) -> str:
+    """Render the shared-memory filesystem (paths + truncated contents) as HTML.
+
+    ``files`` is a list of ``memory_context.MemoryFile`` (or any object with
+    ``store``/``path``/``size``/``content`` attributes). Files are grouped by store,
+    each shown as an expandable entry.
+    """
+    if not files:
+        return "<p><em>The shared-memory filesystem is empty.</em></p>"
+
+    by_store: dict[str, list] = {}
+    for f in files:
+        by_store.setdefault(f.store, []).append(f)
+
+    parts: list[str] = []
+    for store in sorted(by_store):
+        entries = by_store[store]
+        parts.append(f"<h3>\U0001f4c1 {_html.escape(store)}</h3>")
+        rows = []
+        for f in entries:
+            label = f"{_html.escape(f.path)} <span style='opacity:.55'>({f.size} chars)</span>"
+            if f.content:
+                rows.append(
+                    "<details><summary style='cursor:pointer'>"
+                    f"\U0001f4c4 {label}</summary>"
+                    f"<pre style='white-space:pre-wrap;word-break:break-word'>"
+                    f"{_html.escape(f.content)}</pre></details>"
+                )
+            else:
+                rows.append(f"<div>\U0001f4c4 {label}</div>")
+        parts.append("\n".join(rows))
+    return f'<div class="agent-memory-fs">{"".join(parts)}</div>'
+
+
+def render_memory_store_tab(files) -> None:
+    """Render the shared-memory filesystem into a 'Memory Store' report tab."""
+    try:
+        flyte.report.get_tab("Memory Store").replace(render_memory_store_html(files))
+    except Exception:
+        flyte.logger.warning("failed to render memory-store report tab")
+
+
+_PHASE_COLOR = {"succeeded": "#16a34a", "failed": "#dc2626", "aborted": "#b45309", "timed_out": "#dc2626"}
+
+
+def render_run_traces_html(subactions) -> str:
+    """Render a flat sub-action trace (grouped by run) as HTML.
+
+    ``subactions`` is a list of ``introspect.SubAction`` (objects with
+    ``run_name``/``action``/``task``/``phase``/``error``/``inputs``/``outputs``).
+    """
+    if not subactions:
+        return "<p><em>No run traces available yet (runs are traced once they record a run name).</em></p>"
+
+    by_run: dict[str, list] = {}
+    for sa in subactions:
+        by_run.setdefault(sa.run_name, []).append(sa)
+
+    parts: list[str] = []
+    for run_name in by_run:
+        entries = by_run[run_name]
+        parts.append(f"<h3>\U0001f9ea run <code>{_html.escape(run_name or '—')}</code> ({len(entries)} action(s))</h3>")
+        for sa in entries:
+            color = _PHASE_COLOR.get(sa.phase, "#6b7280")
+            head = (
+                f"\U0001f4cd <b>{_html.escape(sa.action)}</b> "
+                f"<span style='opacity:.6'>{_html.escape(sa.task)}</span> "
+                f"<span style='color:{color};font-weight:600'>{_html.escape(sa.phase)}</span>"
+            )
+            body_bits = []
+            if sa.error:
+                body_bits.append(f"<div style='color:#dc2626'>error: {_html.escape(sa.error)}</div>")
+            if sa.inputs:
+                body_bits.append(f"<b>inputs</b><pre style='white-space:pre-wrap;word-break:break-word'>"
+                                 f"{_html.escape(sa.inputs)}</pre>")
+            if sa.outputs:
+                body_bits.append(f"<b>outputs</b><pre style='white-space:pre-wrap;word-break:break-word'>"
+                                 f"{_html.escape(sa.outputs)}</pre>")
+            if body_bits:
+                parts.append(f"<details><summary style='cursor:pointer'>{head}</summary>{''.join(body_bits)}</details>")
+            else:
+                parts.append(f"<div>{head}</div>")
+    return f'<div class="agent-run-traces">{"".join(parts)}</div>'
+
+
+def render_run_traces_tab(subactions) -> None:
+    """Render the flat sub-action trace into a 'Run Traces' report tab."""
+    try:
+        flyte.report.get_tab("Run Traces").replace(render_run_traces_html(subactions))
+    except Exception:
+        flyte.logger.warning("failed to render run-traces report tab")

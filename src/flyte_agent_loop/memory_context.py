@@ -19,6 +19,7 @@ and ``-context`` has a single writer.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .config import Settings
@@ -30,6 +31,16 @@ if TYPE_CHECKING:
 CONTEXT_PATH = "context/digest.md"
 RUNS_PREFIX = "runs/"
 INGEST_STATE_PATH = "ingest/state.json"
+
+
+@dataclass
+class MemoryFile:
+    """One file in the shared-memory filesystem, with its (truncated) content."""
+
+    store: str  # the keyed store the file lives in (e.g. "<key>-runs")
+    path: str  # path within the store (e.g. "runs/<ts>_<run>.json")
+    size: int  # full content length in characters (before truncation)
+    content: str  # content, truncated for display
 
 
 def _runs_key(settings: Settings) -> str:
@@ -106,3 +117,40 @@ async def write_context_digest(settings: Settings, digest: str) -> None:
     store = await _open(_context_key(settings))
     await store.write_text.aio(CONTEXT_PATH, digest, actor="evals")
     await store.save.aio()
+
+
+async def _read_memory_file(store: "MemoryStore", key: str, path: str, max_chars: int) -> MemoryFile:
+    content = await store.read_text.aio(path, default="")
+    size = len(content)
+    shown = content[:max_chars]
+    if size > max_chars:
+        shown += f"\n… [truncated {size - max_chars} chars]"
+    return MemoryFile(store=key, path=path, size=size, content=shown)
+
+
+async def snapshot_memory(
+    settings: Settings, *, max_run_files: int = 30, max_chars: int = 2000
+) -> list[MemoryFile]:
+    """Snapshot the shared-memory filesystem: every file with its truncated content.
+
+    Reads both keyed stores. To keep the snapshot bounded, only the most recent
+    ``max_run_files`` run-record files are included (older ones are summarized) and
+    each file's content is truncated to ``max_chars``.
+    """
+    out: list[MemoryFile] = []
+
+    runs_key = _runs_key(settings)
+    runs = await _open(runs_key)
+    run_paths = sorted(p for p in runs.list_paths() if p.endswith(".json"))
+    omitted = max(0, len(run_paths) - max_run_files)
+    for path in run_paths[-max_run_files:]:
+        out.append(await _read_memory_file(runs, runs_key, path, max_chars))
+    if omitted:
+        out.append(MemoryFile(store=runs_key, path=f"… {omitted} older run file(s) not shown", size=0, content=""))
+
+    ctx_key = _context_key(settings)
+    ctx = await _open(ctx_key)
+    for path in sorted(ctx.list_paths()):
+        out.append(await _read_memory_file(ctx, ctx_key, path, max_chars))
+
+    return out

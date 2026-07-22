@@ -27,6 +27,7 @@ class RunRecord:
     timestamp: str  # ISO-8601
     action: str  # opened_pr | pushed_fixes | skipped | no_work | error
     repo: str = ""  # target GitHub repo, "owner/name"
+    run_name: str = ""  # Flyte run name, for cross-run sub-action introspection
     target_kind: str = ""  # "issue" | "pr"
     target_number: int | None = None
     pr_number: int | None = None

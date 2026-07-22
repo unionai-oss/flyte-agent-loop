@@ -18,3 +18,17 @@ def iso(dt: datetime) -> str:
 def run_id() -> str:
     """Stable-ish identifier for the current run (Flyte action name or random)."""
     return _run_id()
+
+
+def run_name() -> str:
+    """The Flyte *run* name of the current execution (for cross-run introspection).
+
+    Empty string when not running inside a task context.
+    """
+    try:
+        import flyte
+
+        ctx = flyte.ctx()
+        return getattr(getattr(ctx, "action", None), "run_name", "") or ""
+    except Exception:
+        return ""

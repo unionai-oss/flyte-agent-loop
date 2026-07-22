@@ -35,7 +35,7 @@ from .agents import (
     render_plan_files,
 )
 from .staging import ChangeStage, pr_reviewer_tools
-from .common import iso, run_id, utcnow
+from .common import iso, run_id, run_name, utcnow
 from .config import Settings, load_settings
 from .environments import env
 from .evals import RunRecord
@@ -330,6 +330,7 @@ async def _finish(settings: Settings, record: RunRecord) -> RunRecord:
     # Persisting to memory + flushing the report are best-effort: a failure here
     # must not turn a completed run into a task crash.
     record.repo = settings.repo
+    record.run_name = run_name()
     try:
         await record_run(settings, record)
     except Exception:

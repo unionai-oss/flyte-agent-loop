@@ -155,6 +155,29 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
 > cluster — point `tests/integration/config.yaml` at `endpoint: dns:///localhost:30080`
 > with `builder: local`.
 
+## Stop the agents (deactivate all triggers)
+
+Deploying activates three cron triggers. To stop the agents from firing without
+un-deploying, **deactivate** each trigger with `flyte update trigger <trigger-name>
+<task-name> --deactivate`:
+
+```bash
+flyte update trigger issue_to_pr_every_5m  flyte_agent_loop.issue_to_pr --deactivate -p flytesnacks -d development
+flyte update trigger pr_review_every_15m   flyte_agent_loop.pr_review   --deactivate -p flytesnacks -d development
+flyte update trigger evals_every_10m       flyte_agent_loop.evals       --deactivate -p flytesnacks -d development
+```
+
+Use the same `--config`/endpoint (and `-p`/`-d`) you deployed with. Verify with
+`flyte get trigger -p flytesnacks -d development`.
+
+- **Reactivate** later: rerun the commands with `--activate` (or just redeploy —
+  `python -m flyte_agent_loop.deploy` re-activates them, since the triggers default
+  to `auto_activate=True`).
+- **Remove** entirely: `flyte delete trigger <trigger-name> <task-name> -p … -d …`.
+
+> Deactivating stops the schedules but leaves the tasks deployed, so any run
+> already in flight finishes and ad-hoc `--run` invocations still work.
+
 ## Test
 
 ```bash

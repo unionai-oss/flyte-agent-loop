@@ -63,20 +63,39 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
 
 ### 3. `evals` — every 10 minutes (`pipeline_evals.py`)
 
-1. Load every `RunRecord` **with its unique memory-path id**, plus the ingestion
-   ledger (`ingest/state.json`).
-2. **Ingest only new records.** `select_new_records` filters out any record id
-   already in the ledger; `ingest_new_records` folds the rest into a per-target
-   (`issue:<n>` / `pr:<n>`) rollup and appends their ids to the processed set,
-   then the ledger is saved. This is idempotent — a record whose id is already
-   processed is never counted twice, so previously ingested issues/PRs are never
-   double-ingested across the every-10-minute fires.
-3. Compute success rate, verification rate, error rate, PRs opened, fixes pushed
-   over the full history (`evals.evaluate` — a fresh aggregate, not ingestion).
-4. **Recompact** into `context/digest.md`: headline metrics + recent verifier
-   lessons + the ingested issue/PR rollup ("already processed — do not
-   re-litigate"). This is the context fed back into pipelines 1 & 2.
-5. Publish the metrics as a Flyte **report** tab.
+The steps are wrapped with the decorator that fits their compute needs:
+`_load_records`, `_ingest`, `_evaluate` are **`@flyte.trace`** (light memory I/O +
+pure computation — no separate container, traced/checkpointed in-process, and they
+share the task's report context); `_snapshot_memory` is **`@env.task`** (a full
+read of the memory filesystem that grows with history and has no report
+side-effects, so it's isolated with its own retries/resources).
+
+1. `_load_records` — load every `RunRecord` **with its unique memory-path id**.
+2. `_ingest` — **ingest only new records** and write the ledger **only if there is
+   something new**. `select_new_records` filters out ids already in the ledger; if
+   none remain, shared memory is left untouched (no re-write). Otherwise
+   `ingest_new_records` folds the new records into a per-target (`issue:<n>` /
+   `pr:<n>`) rollup, appends their ids to the processed set, and saves
+   `ingest/state.json`. Idempotent — already-ingested issues/PRs are never
+   double-counted.
+3. `_evaluate` — compute success/verification/error rates, PRs opened, fixes
+   pushed over the full history (a fresh aggregate). **Only when new records were
+   ingested** does it recompact `context/digest.md` (headline metrics + recent
+   verifier lessons + the ingested issue/PR rollup) — the context fed back to
+   pipelines 1 & 2.
+4. Publish the metrics as an **Evals** report tab, render the whole shared-memory
+   filesystem (every file + truncated contents, grouped by store) into a **Memory
+   Store** tab via `_snapshot_memory`, and render the **Run Traces** tab via
+   `_introspect_runs` — the flat sub-action "reasoning trace" of the most recent
+   runs. Each `RunRecord` now carries its Flyte `run_name`; `introspect.trace_runs`
+   uses `flyte.remote.Action.listall(for_run_name=…)` + `action.details()` to read
+   every durable sub-action of a run (the tool/PR/commit actions) with its
+   metadata + truncated inputs/outputs. It runs entirely best-effort — a remote-API
+   hiccup produces an error row, never a crash. `_introspect_runs` is an
+   `@env.task` (many control-plane + I/O reads → isolated with its own retries).
+
+So shared memory is written **only for issues/PRs not already ingested** — a run
+that finds nothing new produces a report but touches no memory files.
 
 **Why a ledger and not just recomputed aggregates?** Metrics are safe to
 recompute each run, but the *ingestion* of issue/PR content into the per-target
