@@ -114,14 +114,33 @@ end-to-end on your machine.
 **Prerequisites:** Docker running (and `kubectl` if you want to inspect the
 cluster). The `flyte` CLI ships with the `flyte` package installed above.
 
-1. **Start the devbox** (first run pulls the image; UI at
+1. **Install Docker.** The devbox runs the Flyte cluster inside Docker, so you
+   need a working Docker Engine first:
+
+   - **macOS / Windows** — install [Docker Desktop](https://docs.docker.com/desktop/)
+     (or, on macOS, `brew install --cask docker`) and launch it.
+   - **Linux** — install [Docker Engine](https://docs.docker.com/engine/install/)
+     for your distro. A quick path on Debian/Ubuntu:
+
+     ```bash
+     curl -fsSL https://get.docker.com | sh
+     sudo usermod -aG docker "$USER"   # then log out/in so `docker` runs without sudo
+     ```
+
+   Confirm the daemon is up before continuing:
+
+   ```bash
+   docker run --rm hello-world
+   ```
+
+2. **Start the devbox** (first run pulls the image; UI at
    <http://localhost:30080/v2>, image registry at `localhost:30000`):
 
    ```bash
    flyte start devbox
    ```
 
-2. **Point the CLI/SDK at it.** Generate a config for the local cluster (writes
+3. **Point the CLI/SDK at it.** Generate a config for the local cluster (writes
    `./config.yaml`, which `flyte` and `flyte.init_from_config()` auto-discover):
 
    ```bash
@@ -133,7 +152,7 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
 
    (It's gitignored. Use `-o ~/.flyte` to write `~/.flyte/config.yaml` instead.)
 
-3. **Add the secrets** to the devbox cluster (same names as before; see
+4. **Add the secrets** to the devbox cluster (same names as before; see
    [Create a GitHub token](#create-a-github-token)):
 
    ```bash
@@ -141,7 +160,7 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
    flyte create secret --project flytesnacks --domain development anthropic-api-key --value sk-ant-xxx
    ```
 
-4. **Deploy the pipelines** (uses `~/.flyte/config.yaml` via
+5. **Deploy the pipelines** (uses `~/.flyte/config.yaml` via
    `flyte.init_from_config()`); the local image builder builds into the devbox
    registry:
 
@@ -153,7 +172,7 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
 
    Watch executions and reports at <http://localhost:30080/v2>.
 
-5. **Pause / tear down** when done:
+6. **Pause / tear down** when done:
 
    ```bash
    flyte stop devbox              # pause (keeps state; resume with `flyte start devbox`)
