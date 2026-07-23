@@ -1,13 +1,13 @@
 """Cross-run introspection: the flat sub-action trace of a Flyte run.
 
 Given a run name (captured on each ``RunRecord.run_name``), this reads the run's
-actions from the control plane — the durable sub-actions an ``issue_to_pr`` /
-``pr_review`` run dispatched (tool calls, PR/commit operations, etc.) — with their
+actions from the control plane — the durable sub-actions a ``builder`` /
+``reviewer`` run dispatched (tool calls, PR/commit operations, etc.) — with their
 metadata and (truncated) inputs/outputs. This is the "reasoning trace" of a run.
 
 Everything is best-effort: the remote API may be unavailable or a specific action's
 I/O may not be reconstructable, so each layer degrades to a message rather than
-raising, and the evals pipeline treats the whole thing as an optional report.
+raising, and the distiller pipeline treats the whole thing as an optional report.
 """
 
 from __future__ import annotations

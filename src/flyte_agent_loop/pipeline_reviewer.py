@@ -1,4 +1,4 @@
-"""Pipeline 2 — address review comments on agent PRs. Runs every 15 minutes.
+"""Pipeline 2 — address review comments on agent PRs. Runs every 5 minutes.
 
 Flow (each stage grouped via ``flyte.group`` so its agent/tool sub-actions are
 chunked together in the UI):
@@ -16,7 +16,7 @@ chunked together in the UI):
 4. ``push`` — once verified, push the fixes to the PR head branch, then RELEASE
    the dibs so a later run can pick up additional follow-up comments. If all
    attempts are exhausted, post the verifier's feedback and release.
-5. Record the run in shared memory for the evals pipeline.
+5. Record the run in shared memory for the distiller pipeline.
 
 Any runtime error is caught at the top level: the claim (if held) is released so
 a future run can retry, and an ``error`` RunRecord is returned instead of the
@@ -45,37 +45,37 @@ from .report_style import finalize_report, install_live_report_flush, link, rend
 from .tools import PR_VERIFIER_TOOLS, push_changes_to_pr
 
 TRIGGER = flyte.Trigger(
-    name="pr_review_every_15m",
-    automation=flyte.Cron("*/15 * * * *"),
+    name="reviewer_every_5m",
+    automation=flyte.Cron("*/5 * * * *"),
     description="Address review comments on agent-authored PRs.",
 )
 
 
 @env.task(report=True, triggers=[TRIGGER])
-async def pr_review() -> RunRecord:
+async def reviewer() -> RunRecord:
     settings = load_settings()
     now = utcnow()
     rid = run_id()
     log = flyte.logger
-    log.info("pr_review start: run=%s repo=%s model=%s max_tokens=%s",
+    log.info("reviewer start: run=%s repo=%s model=%s max_tokens=%s",
              rid, settings.repo, settings.model, settings.max_tokens)
-    flyte.report.log(f"<h2>pr_review</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
+    flyte.report.log(f"<h2>reviewer</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
 
     claimed: int | None = None
     try:
         install_live_report_flush()  # flush the report after every agent event (live updates)
         context = await read_shared_context(settings)
-        log.info("pr_review: loaded shared context (%d chars)", len(context))
+        log.info("reviewer: loaded shared context (%d chars)", len(context))
         render_memory_tab(context)  # show the shared-memory context the agents run with
 
         # 1. Claim an agent-authored open PR.
         with flyte.group("claim"):
             target = _claim_agent_pr(settings, now)
         if target is None:
-            log.info("pr_review: no claimable open agent PR; nothing to do")
+            log.info("reviewer: no claimable open agent PR; nothing to do")
             return await _finish(settings, _record(rid, now, "no_work", summary="No claimable open agent PRs."))
         number = claimed = target["number"]
-        log.info("pr_review: claimed PR #%s: %s", number, target["title"])
+        log.info("reviewer: claimed PR #%s: %s", number, target["title"])
         flyte.report.log(
             f"<p>claimed PR {link(target.get('url', ''), f'#{number}')}: {target['title']}</p>"
         )
@@ -100,12 +100,12 @@ async def pr_review() -> RunRecord:
                 result = await reviewer.run.aio(message)
             plan = stage.to_plan()
             log.info(
-                "pr_review: attempt %d/%d reviewer staged action=%s files=%d has_changes=%s error=%r",
+                "reviewer: attempt %d/%d reviewer staged action=%s files=%d has_changes=%s error=%r",
                 attempt, settings.max_tries, plan.action, len(plan.files), plan.has_changes, plan.error,
             )
             if plan.error:
                 log.warning(
-                    "pr_review: reviewer did not submit a decision for PR #%s (attempt %d): %s. "
+                    "reviewer: reviewer did not submit a decision for PR #%s (attempt %d): %s. "
                     "Final message: %s",
                     number, attempt, plan.error, (result.summary or "")[-800:],
                 )
@@ -117,7 +117,7 @@ async def pr_review() -> RunRecord:
                 # The reviewer deems the PR good: post a deduped "looks good" comment and
                 # HOLD the dibs claim (no retry — this is a valid terminal outcome).
                 summary = plan.summary or "No actionable feedback; the changes look good."
-                log.info("pr_review: PR #%s looks good (no changes); approving", number)
+                log.info("reviewer: PR #%s looks good (no changes); approving", number)
                 posted = _approve(settings, number, now, summary)
                 flyte.report.log(
                     f"<p>reviewed PR {link(target.get('url', ''), f'#{number}')}: looks good — approved"
@@ -132,7 +132,7 @@ async def pr_review() -> RunRecord:
             with flyte.group(f"verify:attempt-{attempt}"):
                 verdict = parse_verdict(await _verify(settings, number, plan, addressed))
             log.info(
-                "pr_review: attempt %d/%d verifier verified=%s notes=%s",
+                "reviewer: attempt %d/%d verifier verified=%s notes=%s",
                 attempt, settings.max_tries, verdict.verified, verdict.notes,
             )
             flyte.report.log(
@@ -141,11 +141,11 @@ async def pr_review() -> RunRecord:
             )
             if verdict.verified:
                 break
-            log.info("pr_review: attempt %d/%d FAILED verification for PR #%s", attempt, settings.max_tries, number)
+            log.info("reviewer: attempt %d/%d FAILED verification for PR #%s", attempt, settings.max_tries, number)
 
         if not verdict.verified:
             # Exhausted every attempt without passing verification.
-            log.info("pr_review: exhausted %d attempt(s) for PR #%s; releasing", attempt, number)
+            log.info("reviewer: exhausted %d attempt(s) for PR #%s; releasing", attempt, number)
             _comment_and_release(
                 settings, number, now,
                 f"\U0001f916 flyte-agent-loop drafted fixes {attempt} time(s) but the verifier still "
@@ -161,7 +161,7 @@ async def pr_review() -> RunRecord:
             )
 
         # 4. Verified: push fixes, then release dibs for future follow-up comments.
-        log.info("pr_review: verification PASSED for PR #%s on attempt %d; pushing %d file(s)",
+        log.info("reviewer: verification PASSED for PR #%s on attempt %d; pushing %d file(s)",
                  number, attempt, len(plan.files))
         with flyte.group("push"):
             push = await push_changes_to_pr.aio(
@@ -169,7 +169,7 @@ async def pr_review() -> RunRecord:
                 files=plan.files,
                 message=str(plan.raw.get("message") or f"Address review feedback on #{number}"),
             )
-        log.info("pr_review: pushed %s to %s on PR #%s", push["commit"][:7], push["branch"], number)
+        log.info("reviewer: pushed %s to %s on PR #%s", push["commit"][:7], push["branch"], number)
         _comment_and_release(
             settings, number, now,
             f"\U0001f916 flyte-agent-loop pushed fixes ({push['commit'][:7]}) addressing: "
@@ -188,7 +188,7 @@ async def pr_review() -> RunRecord:
         )
 
     except Exception as exc:  # graceful recovery from any runtime error
-        flyte.logger.exception("pr_review failed")
+        flyte.logger.exception("reviewer failed")
         flyte.report.log(f"<p style='color:#b00'>pipeline error: {exc}</p>")
         if claimed is not None:
             _safe_release(settings, claimed, now)
@@ -207,7 +207,7 @@ def _record(
     summary: str = "", error: str = "",
 ) -> RunRecord:
     return RunRecord(
-        pipeline="pr_review",
+        pipeline="reviewer",
         run_id=rid,
         timestamp=iso(now),
         action=action,

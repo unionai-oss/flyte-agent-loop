@@ -13,7 +13,7 @@ chunked together in the UI):
    to satisfy the verifier.
 4. ``open_pr`` — once verified, open a PR with the changes. If all attempts are
    exhausted, post the verifier's feedback to the issue and release the claim.
-5. Record the run in shared memory for the evals pipeline.
+5. Record the run in shared memory for the distiller pipeline.
 
 Any runtime error is caught at the top level: the claim (if held) is released so
 a future run can retry, and an ``error`` RunRecord is returned instead of the
@@ -42,37 +42,37 @@ from .report_style import finalize_report, install_live_report_flush, link, rend
 from .tools import open_pr_with_changes
 
 TRIGGER = flyte.Trigger(
-    name="issue_to_pr_every_5m",
+    name="builder_every_5m",
     automation=flyte.Cron("*/5 * * * *"),
     description="Pick up an open GitHub issue and open a PR implementing it.",
 )
 
 
 @env.task(report=True, triggers=[TRIGGER])
-async def issue_to_pr() -> RunRecord:
+async def builder() -> RunRecord:
     settings = load_settings()
     now = utcnow()
     rid = run_id()
     log = flyte.logger
-    log.info("issue_to_pr start: run=%s repo=%s model=%s max_tokens=%s",
+    log.info("builder start: run=%s repo=%s model=%s max_tokens=%s",
              rid, settings.repo, settings.model, settings.max_tokens)
-    flyte.report.log(f"<h2>issue_to_pr</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
+    flyte.report.log(f"<h2>builder</h2><p>run <code>{rid}</code> on <b>{settings.repo}</b></p>")
 
     claimed: int | None = None
     try:
         install_live_report_flush()  # flush the report after every agent event (live updates)
         context = await read_shared_context(settings)
-        log.info("issue_to_pr: loaded shared context (%d chars)", len(context))
+        log.info("builder: loaded shared context (%d chars)", len(context))
         render_memory_tab(context)  # show the shared-memory context the agents run with
 
         # 1. Claim an open issue.
         with flyte.group("claim"):
             target = _claim_open_issue(settings, now)
         if target is None:
-            log.info("issue_to_pr: no claimable open issue; nothing to do")
+            log.info("builder: no claimable open issue; nothing to do")
             return await _finish(settings, _record(rid, now, "no_work", summary="No claimable open issues."))
         number = claimed = target["number"]
-        log.info("issue_to_pr: claimed issue #%s: %s", number, target["title"])
+        log.info("builder: claimed issue #%s: %s", number, target["title"])
         flyte.report.log(
             f"<p>claimed issue {link(target.get('url', ''), f'#{number}')}: {target['title']}</p>"
         )
@@ -96,19 +96,19 @@ async def issue_to_pr() -> RunRecord:
                 result = await builder.run.aio(message)
             plan = stage.to_plan()
             log.info(
-                "issue_to_pr: attempt %d/%d staged action=%s files=%d has_changes=%s error=%r",
+                "builder: attempt %d/%d staged action=%s files=%d has_changes=%s error=%r",
                 attempt, settings.max_tries, plan.action, len(plan.files), plan.has_changes, plan.error,
             )
             if plan.error or not plan.has_changes:
                 # Builder declined (skip) or produced nothing to verify — stop looping.
                 if plan.error:
                     log.warning(
-                        "issue_to_pr: builder did not submit a change for issue #%s (attempt %d): %s. "
+                        "builder: builder did not submit a change for issue #%s (attempt %d): %s. "
                         "Final message: %s",
                         number, attempt, plan.error, (result.summary or "")[-800:],
                     )
                 else:
-                    log.info("issue_to_pr: builder proposed no changes for issue #%s: %s", number, plan.summary)
+                    log.info("builder: builder proposed no changes for issue #%s: %s", number, plan.summary)
                 _release(settings, number, now)
                 return await _finish(
                     settings,
@@ -122,7 +122,7 @@ async def issue_to_pr() -> RunRecord:
                 verifier = build_verifier_agent(settings)
                 verdict = parse_verdict((await verifier.run.aio(_verify_prompt(number, target, plan))).summary)
             log.info(
-                "issue_to_pr: attempt %d/%d verifier verified=%s notes=%s",
+                "builder: attempt %d/%d verifier verified=%s notes=%s",
                 attempt, settings.max_tries, verdict.verified, verdict.notes,
             )
             flyte.report.log(
@@ -131,11 +131,11 @@ async def issue_to_pr() -> RunRecord:
             )
             if verdict.verified:
                 break
-            log.info("issue_to_pr: attempt %d/%d FAILED verification for issue #%s", attempt, settings.max_tries, number)
+            log.info("builder: attempt %d/%d FAILED verification for issue #%s", attempt, settings.max_tries, number)
 
         if not verdict.verified:
             # Exhausted every attempt without passing verification.
-            log.info("issue_to_pr: exhausted %d attempt(s) for issue #%s; releasing", attempt, number)
+            log.info("builder: exhausted %d attempt(s) for issue #%s; releasing", attempt, number)
             _comment_and_release(
                 settings, number, now,
                 f"\U0001f916 flyte-agent-loop tried {attempt} time(s) but the verifier still flags it: "
@@ -151,7 +151,7 @@ async def issue_to_pr() -> RunRecord:
             )
 
         # 4. Verified: open the PR.
-        log.info("issue_to_pr: verification PASSED for issue #%s on attempt %d; opening PR", number, attempt)
+        log.info("builder: verification PASSED for issue #%s on attempt %d; opening PR", number, attempt)
         with flyte.group("open_pr"):
             branch = str(plan.raw.get("branch") or f"agent/issue-{number}")
             pr = await open_pr_with_changes.aio(
@@ -161,7 +161,7 @@ async def issue_to_pr() -> RunRecord:
                 body=str(plan.raw.get("body") or plan.summary),
                 files=plan.files,
             )
-        log.info("issue_to_pr: opened PR #%s (%s) for issue #%s", pr["number"], pr["url"], number)
+        log.info("builder: opened PR #%s (%s) for issue #%s", pr["number"], pr["url"], number)
         pr_link = link(pr["url"], f"#{pr['number']}")
         issue_link = link(target.get("url", ""), f"#{number}")
         flyte.report.log(f"<p>opened PR {pr_link} for issue {issue_link}</p>")
@@ -175,7 +175,7 @@ async def issue_to_pr() -> RunRecord:
         )
 
     except Exception as exc:  # graceful recovery from any runtime error
-        flyte.logger.exception("issue_to_pr failed")
+        flyte.logger.exception("builder failed")
         flyte.report.log(f"<p style='color:#b00'>pipeline error: {exc}</p>")
         if claimed is not None:
             _safe_release(settings, claimed, now)
@@ -194,7 +194,7 @@ def _record(
     summary: str = "", error: str = "",
 ) -> RunRecord:
     return RunRecord(
-        pipeline="issue_to_pr",
+        pipeline="builder",
         run_id=rid,
         timestamp=iso(now),
         action=action,

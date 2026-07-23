@@ -1,7 +1,7 @@
 """Tests for the build<->verify retry messaging in issue_to_pr."""
 
 from flyte_agent_loop.agents import Plan, Verdict
-from flyte_agent_loop.pipeline_issue_to_pr import _build_message, _retry_message
+from flyte_agent_loop.pipeline_builder import _build_message, _retry_message
 
 
 def test_build_message_first_attempt():

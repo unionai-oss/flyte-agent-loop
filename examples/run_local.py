@@ -9,9 +9,9 @@ APIs), so make sure the environment is configured first:
     export ANTHROPIC_API_KEY=sk-ant-...
     export FLYTE_AGENT_MODEL=claude-sonnet-4-5           # optional
 
-    python examples/run_local.py issue_to_pr
-    python examples/run_local.py pr_review
-    python examples/run_local.py evals
+    python examples/run_local.py builder
+    python examples/run_local.py reviewer
+    python examples/run_local.py distiller
 
 Because these agents open PRs and post comments, point FLYTE_AGENT_REPO at a
 repository you own and don't mind being written to.
@@ -23,11 +23,11 @@ import sys
 
 import flyte
 
-from flyte_agent_loop.pipeline_evals import evals
-from flyte_agent_loop.pipeline_issue_to_pr import issue_to_pr
-from flyte_agent_loop.pipeline_pr_review import pr_review
+from flyte_agent_loop.pipeline_distiller import distiller
+from flyte_agent_loop.pipeline_builder import builder
+from flyte_agent_loop.pipeline_reviewer import reviewer
 
-PIPELINES = {"issue_to_pr": issue_to_pr, "pr_review": pr_review, "evals": evals}
+PIPELINES = {"builder": builder, "reviewer": reviewer, "distiller": distiller}
 
 
 def main() -> None:

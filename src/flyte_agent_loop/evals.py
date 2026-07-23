@@ -22,7 +22,7 @@ NEUTRAL_ACTIONS = {"skipped", "no_work"}
 class RunRecord:
     """One agent invocation's outcome, appended to shared memory."""
 
-    pipeline: str  # "issue_to_pr" | "pr_review"
+    pipeline: str  # "builder" | "reviewer"
     run_id: str
     timestamp: str  # ISO-8601
     action: str  # opened_pr | pushed_fixes | skipped | no_work | error
@@ -244,6 +244,20 @@ def compact_context(records: Sequence[RunRecord], summary: EvalSummary, max_less
             break
     lines.extend(lessons or ["- (no verifier feedback recorded yet)"])
     return "\n".join(lines)
+
+
+def render_records_brief(records: Sequence[RunRecord], limit: int = 60) -> str:
+    """One line per record (most recent last) for the distiller agent's prompt.
+
+    Emphasizes the highest-signal field — the verifier notes — falling back to the
+    run summary.
+    """
+    lines: list[str] = []
+    for r in list(records)[-limit:]:
+        target = f"{r.target_kind}#{r.target_number}" if r.target_number is not None else "-"
+        signal = (r.verifier_notes or r.summary or "").strip().replace("\n", " ")
+        lines.append(f"- [{r.pipeline}] {r.action} {target} verified={r.verified}: {signal}")
+    return "\n".join(lines) if lines else "(none)"
 
 
 def render_report_html(summary: EvalSummary, records: Sequence[RunRecord]) -> str:

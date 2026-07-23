@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from flyte.ai.agents import MemoryStore
 
 CONTEXT_PATH = "context/digest.md"
+LESSONS_PATH = "context/lessons.md"
 RUNS_PREFIX = "runs/"
 INGEST_STATE_PATH = "ingest/state.json"
 
@@ -108,14 +109,27 @@ async def load_ingest_state(settings: Settings) -> IngestState:
 async def save_ingest_state(settings: Settings, state: IngestState) -> None:
     """Persist pipeline 3's ingestion ledger (context store)."""
     store = await _open(_context_key(settings))
-    await store.write_json.aio(INGEST_STATE_PATH, state.to_dict(), actor="evals")
+    await store.write_json.aio(INGEST_STATE_PATH, state.to_dict(), actor="distiller")
     await store.save.aio()
 
 
 async def write_context_digest(settings: Settings, digest: str) -> None:
-    """Persist the compacted context digest (context store, pipeline 3 only)."""
+    """Persist the compacted context digest (context store, distiller only)."""
     store = await _open(_context_key(settings))
-    await store.write_text.aio(CONTEXT_PATH, digest, actor="evals")
+    await store.write_text.aio(CONTEXT_PATH, digest, actor="distiller")
+    await store.save.aio()
+
+
+async def read_lessons(settings: Settings) -> str:
+    """Read the distiller agent's consolidated lessons (empty if none yet)."""
+    store = await _open(_context_key(settings))
+    return await store.read_text.aio(LESSONS_PATH, default="")
+
+
+async def write_lessons(settings: Settings, lessons: str) -> None:
+    """Persist the distiller agent's consolidated lessons (fed back to it next run)."""
+    store = await _open(_context_key(settings))
+    await store.write_text.aio(LESSONS_PATH, lessons, actor="distiller")
     await store.save.aio()
 
 

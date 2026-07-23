@@ -195,7 +195,7 @@ def render_memory_tab(context: str) -> None:
     if context and context.strip():
         body = _md_to_html(context)
     else:
-        body = "<p><em>No shared memory yet — the evals pipeline populates this every 10 minutes.</em></p>"
+        body = "<p><em>No shared memory yet — the distiller pipeline populates this every 10 minutes.</em></p>"
     try:
         flyte.report.get_tab(_MEMORY_TAB).replace(f'<div class="agent-memory">{body}</div>')
     except Exception:

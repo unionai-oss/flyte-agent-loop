@@ -2,7 +2,7 @@
 
 from flyte_agent_loop.evals import RunRecord
 from flyte_agent_loop.introspect import SubAction
-from flyte_agent_loop.pipeline_evals import _recent_run_names
+from flyte_agent_loop.pipeline_distiller import _recent_run_names
 from flyte_agent_loop.report_style import render_run_traces_html
 
 

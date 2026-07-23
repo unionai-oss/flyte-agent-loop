@@ -8,9 +8,9 @@ grade themselves.
 
 | Pipeline | Cadence | What it does |
 | --- | --- | --- |
-| `issue_to_pr` | every **5 min** | Claims an open issue (via a "dibs" comment), implements it with tests/examples/docs, has a **verifier sub-agent** check the work, then opens a PR. |
-| `pr_review` | every **15 min** | Claims an open agent PR, reads its review comments, makes + verifies fixes, pushes them, and releases the claim for follow-ups. |
-| `evals` | every **10 min** | Compacts the run history into Flyte **Memory**, computes success-rate/evals as a Flyte **report**, and feeds the digest back as context to pipelines 1 & 2. |
+| `builder` | every **5 min** | Claims an open issue (via a "dibs" comment), implements it with tests/examples/docs, has a **verifier sub-agent** check the work, then opens a PR. |
+| `reviewer` | every **5 min** | Claims an open agent PR, reads its review comments, makes + verifies fixes, pushes them, and releases the claim for follow-ups. |
+| `distiller` | every **10 min** | Uses a **distiller Agent** to dedupe + consolidate the builder's and reviewer's run history into a compact, high-signal "lessons" memory (fed back to them as context), and publishes success-rate metrics, the memory filesystem, and per-run reasoning traces as a Flyte **report**. |
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design.
 
@@ -25,9 +25,10 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design.
   plan; a separate strict verifier agent checks correctness & completeness, and
   the PR is opened / fixes are pushed **only if it passes**.
 - **Shared memory** — one keyed `flyte.ai.agents.MemoryStore` holds per-run
-  records and a compacted context digest. The evals pipeline recompacts it every
-  10 minutes; the builder/reviewer agents read it as context so they learn from
-  past verifier feedback.
+  records and a consolidated "lessons" digest. Every 10 minutes the `distiller`
+  pipeline runs a **distiller Agent** that dedupes and consolidates the newest runs
+  into that digest (as much signal as possible per token); the builder/reviewer
+  agents read it as context so they learn from past verifier feedback.
 
 ## Layout
 
@@ -41,9 +42,9 @@ src/flyte_agent_loop/
   environments.py        # shared Image, secrets, TaskEnvironment
   tools.py               # @env.task GitHub tools handed to the agents
   agents.py              # builder / reviewer / verifier agent factories + parsers
-  pipeline_issue_to_pr.py   # Pipeline 1 (cron */5)
-  pipeline_pr_review.py     # Pipeline 2 (cron */15)
-  pipeline_evals.py         # Pipeline 3 (cron */10)
+  pipeline_builder.py   # Pipeline 1 (cron */5)
+  pipeline_reviewer.py     # Pipeline 2 (cron */5)
+  pipeline_distiller.py         # Pipeline 3 (cron */10)
   deploy.py              # deploy env + triggers, or run one pipeline
 tests/                   # hermetic pytest suite (no cluster/network/LLM needed)
 examples/run_local.py    # run one pipeline once, locally
@@ -139,7 +140,7 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
    ```bash
    export FLYTE_AGENT_REPO=your-org/your-sandbox-repo
    python -m flyte_agent_loop.deploy            # activate schedules on the devbox
-   python -m flyte_agent_loop.deploy --run issue_to_pr  # or trigger one run now {issue_to_pr, pr_review, evals}
+   python -m flyte_agent_loop.deploy --run builder  # or trigger one run now {builder, reviewer, distiller}
    ```
 
    Watch executions and reports at <http://localhost:30080/v2>.
@@ -162,9 +163,9 @@ un-deploying, **deactivate** each trigger with `flyte update trigger <trigger-na
 <task-name> --deactivate`:
 
 ```bash
-flyte update trigger issue_to_pr_every_5m  flyte_agent_loop.issue_to_pr --deactivate -p flytesnacks -d development
-flyte update trigger pr_review_every_15m   flyte_agent_loop.pr_review   --deactivate -p flytesnacks -d development
-flyte update trigger evals_every_10m       flyte_agent_loop.evals       --deactivate -p flytesnacks -d development
+flyte update trigger builder_every_5m  flyte_agent_loop.builder --deactivate -p flytesnacks -d development
+flyte update trigger reviewer_every_5m    flyte_agent_loop.reviewer   --deactivate -p flytesnacks -d development
+flyte update trigger distiller_every_10m       flyte_agent_loop.distiller       --deactivate -p flytesnacks -d development
 ```
 
 Use the same `--config`/endpoint (and `-p`/`-d`) you deployed with. Verify with

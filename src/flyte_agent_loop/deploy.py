@@ -8,13 +8,13 @@ Usage::
 
     python -m flyte_agent_loop.deploy            # deploy with triggers active
     python -m flyte_agent_loop.deploy --dryrun   # plan only, don't apply
-    python -m flyte_agent_loop.deploy --run issue_to_pr   # run one pipeline now
+    python -m flyte_agent_loop.deploy --run builder   # run one pipeline now
 
 Deploying registers the tasks and activates their cron triggers:
 
-* ``issue_to_pr`` — every 5 minutes
-* ``pr_review``   — every 15 minutes
-* ``evals``       — every 10 minutes
+* ``builder`` — every 5 minutes
+* ``reviewer``   — every 5 minutes
+* ``distiller``       — every 10 minutes
 
 Secrets ``github-token`` and ``anthropic-api-key`` must exist in your Flyte /
 Union project before the scheduled runs will succeed.
@@ -30,14 +30,14 @@ import flyte
 from .environments import env
 
 # Importing the pipeline modules registers their tasks (and triggers) on ``env``.
-from .pipeline_evals import evals
-from .pipeline_issue_to_pr import issue_to_pr
-from .pipeline_pr_review import pr_review
+from .pipeline_distiller import distiller
+from .pipeline_builder import builder
+from .pipeline_reviewer import reviewer
 
 PIPELINES = {
-    "issue_to_pr": issue_to_pr,
-    "pr_review": pr_review,
-    "evals": evals,
+    "builder": builder,
+    "reviewer": reviewer,
+    "distiller": distiller,
 }
 
 

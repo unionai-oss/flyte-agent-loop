@@ -175,6 +175,42 @@ def build_verifier_agent(settings: Settings, tools: Sequence[Any] = ISSUE_VERIFI
     )
 
 
+_DISTILLER_INSTRUCTIONS = """\
+You are the MEMORY DISTILLER for a team of two autonomous agents that work a GitHub
+repo on a schedule: a *builder* (implements issues, opens PRs) and a *reviewer*
+(reviews PRs, pushes fixes). Their run outcomes are recorded, and a compact "lessons"
+memory is fed back to them as context on every run so they repeat what works and avoid
+what fails.
+
+Given the CURRENT lessons memory plus the NEW run records since the last distillation,
+produce an UPDATED lessons memory that packs as much useful signal as possible into as
+few tokens as possible:
+
+- DEDUPE: merge lessons that make the same point; never state a point twice.
+- CONSOLIDATE: fold the new records' insights into the existing lessons rather than
+  appending a parallel list.
+- PRIORITIZE SIGNAL: keep concrete, actionable lessons — especially from verifier
+  feedback (what made work fail vs. pass). Drop vague, one-off, or low-value notes.
+  If a lesson recurs, it is higher signal — keep it, and you may note it's common.
+- BE TOKEN-EFFICIENT: terse bullet points, no preamble, no meta-commentary. Cap the
+  list — if there are many candidates, keep only the highest-impact lessons.
+
+Output ONLY the updated lessons memory in markdown: a short ``# Lessons`` heading
+followed by concise bullets. Nothing else.
+"""
+
+
+def build_distiller_agent(settings: Settings) -> Agent:
+    """Agent that consolidates run history into a compact, high-signal lessons memory."""
+    return Agent(
+        name="distiller",
+        instructions=_DISTILLER_INSTRUCTIONS,
+        model=_model(settings),
+        max_turns=2,  # single-shot consolidation, no tools
+        call_llm=build_call_llm(settings.max_tokens),
+    )
+
+
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
