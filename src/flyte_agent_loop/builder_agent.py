@@ -188,7 +188,23 @@ async def builder() -> RunRecord:
                 ),
             )
 
-        # Code change → open the PR.
+        # Code change → open the PR. Belt-and-suspenders on top of dibs (which is
+        # best-effort): re-check right before opening that no concurrent run already
+        # opened a PR for this issue. Building takes many seconds, so by now a run that
+        # raced us and finished first has a visible PR — bail instead of duplicating it.
+        if _issue_already_has_open_pr(settings, number):
+            log.info("builder: issue #%s already has an open PR (concurrent run); skipping open", number)
+            flyte.report.log(f"<p>issue {issue_link} already has an open PR — skipping duplicate</p>")
+            _release(settings, number, now)
+            return await _finish(
+                settings,
+                _record(
+                    rid, now, "no_work", number=number, attempts=attempt, verified=True,
+                    verifier_notes=verdict.notes,
+                    summary="Superseded: issue already had an open PR from a concurrent run.",
+                ),
+            )
+
         log.info("builder: verification PASSED for issue #%s on attempt %d; opening PR", number, attempt)
         with flyte.group("open_pr"):
             branch = str(plan.raw.get("branch") or f"agent/issue-{number}")
@@ -362,6 +378,17 @@ def _claim_open_issue(settings: Settings, now) -> dict | None:
                 return issue  # stop at the first claim — one issue per run
             flyte.report.log(f"<p>issue #{number} skipped: {claim.reason}</p>")
     return None
+
+
+def _issue_already_has_open_pr(settings: Settings, number: int) -> bool:
+    """Whether issue ``number`` already has an associated open PR (any author).
+
+    The authoritative last-line-of-defense against duplicate PRs: dibs is best-effort,
+    so a concurrent run that raced past the claim and finished first leaves a visible
+    PR that we can detect here, right before opening our own.
+    """
+    with GitHubClient(settings) as gh:
+        return number in gh.issues_with_open_prs()
 
 
 def _release(settings: Settings, number: int, now) -> None:

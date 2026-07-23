@@ -130,6 +130,27 @@ def active_claim(markers: Sequence[Marker], kind: str, now: datetime) -> Marker 
     return latest
 
 
+def owning_claim(markers: Sequence[Marker], kind: str, now: datetime) -> Marker | None:
+    """Return the claim that owns ``kind`` under first-come-first-served, or ``None``.
+
+    Unlike :func:`active_claim` (which is *latest*-wins and keys on ``agent``), this
+    resolves **concurrent claims by different runs** deterministically: the winner is
+    the *earliest* unexpired ``claim`` marker for ``kind`` that is not followed by a
+    ``release``. Because every run stamps a unique ``run`` id, two runs that race to
+    claim the same target — even under the same ``agent`` id — can each read the full
+    comment list afterwards and agree on the single winner (the one whose claim comment
+    is chronologically first), regardless of the order in which they read back.
+    """
+    kind_markers = [m for m in markers if m.kind == kind]
+    for i, m in enumerate(kind_markers):
+        if m.op is not Op.CLAIM or m.until <= now:
+            continue
+        if any(later.op is Op.RELEASE for later in kind_markers[i + 1:]):
+            continue
+        return m
+    return None
+
+
 def can_claim(markers: Sequence[Marker], kind: str, agent: str, now: datetime) -> bool:
     """Whether ``agent`` may claim ``kind`` right now.
 

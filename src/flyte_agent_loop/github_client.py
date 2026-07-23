@@ -562,23 +562,35 @@ class GitHubClient:
     def try_claim(self, number: int, kind: str, *, now: datetime | None = None) -> ClaimResult:
         """Attempt to claim dibs on issue/PR ``number``.
 
-        Reads the existing comments, and if no other agent holds an unexpired
-        claim, posts a claim comment. Idempotent for the current agent.
+        Ownership is scoped to this *run* (not just the agent id, which every run
+        shares). If another run already owns an unexpired claim, we stand down. If the
+        target is free, we post a claim and then **read the comments back** to resolve
+        any run that raced us: the first-come-first-served winner (:func:`dibs.owning_claim`)
+        is the one whose claim comment is chronologically first. The loser stands down,
+        so two runs firing at once no longer both proceed to build + open a PR.
         """
         now = now or datetime.now(timezone.utc)
         agent = self.settings.agent_id
-        markers = dibs.parse_markers(c["body"] for c in self.list_comments(number))
-
-        active = dibs.active_claim(markers, kind, now)
-        if active is not None and active.agent != agent:
-            return ClaimResult(False, f"held by {active.agent} until {active.until}", active.agent)
-        if dibs.held_by_me(markers, kind, agent, now):
-            return ClaimResult(True, "already held by this agent", agent)
-
-        until = now + timedelta(minutes=self.settings.dibs_ttl_minutes)
         run = _run_id()
+
+        owner = dibs.owning_claim(
+            dibs.parse_markers(c["body"] for c in self.list_comments(number)), kind, now
+        )
+        if owner is not None:
+            if owner.run == run:
+                return ClaimResult(True, "already held by this run", agent)
+            return ClaimResult(False, f"held by run {owner.run} until {owner.until}", owner.agent)
+
+        # Target is free: stake our claim, then re-read to see if a concurrent run beat
+        # us to it. Earliest claim wins — stable regardless of read-back ordering.
+        until = now + timedelta(minutes=self.settings.dibs_ttl_minutes)
         self.add_comment(number, dibs.render_claim(kind, agent, run, until))
-        return ClaimResult(True, "claimed", agent)
+        owner = dibs.owning_claim(
+            dibs.parse_markers(c["body"] for c in self.list_comments(number)), kind, now
+        )
+        if owner is None or owner.run == run:
+            return ClaimResult(True, "claimed", agent)
+        return ClaimResult(False, f"lost claim race to run {owner.run}", owner.agent)
 
     def release(self, number: int, kind: str, *, now: datetime | None = None) -> dict[str, Any]:
         """Post a release marker so follow-up runs may pick this up again."""

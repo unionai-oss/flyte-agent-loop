@@ -107,13 +107,59 @@ def test_try_claim_blocked_by_other_agent_does_not_post():
     assert fake.posted == []
 
 
-def test_try_claim_is_reentrant_for_same_agent():
+def test_try_claim_reentrant_for_same_run(monkeypatch):
+    # The SAME run re-claiming its own held target is idempotent (no duplicate post).
+    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r1")
     mine = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
     fake = FakeGitHub(comments={5: [{"user": {"login": "agentA"}, "body": mine}]})
     with client_for(fake) as gh:
         result = gh.try_claim(5, "issue", now=NOW)
     assert result.claimed is True
-    assert fake.posted == []  # already held; no duplicate claim
+    assert fake.posted == []  # already held by this run; no duplicate claim
+
+
+def test_try_claim_blocked_by_another_run_of_same_agent(monkeypatch):
+    # A DIFFERENT run of the same agent already holds the claim — we must stand down.
+    # (Every run shares the agent id, so ownership is keyed on the unique run id.
+    # This is the leak that previously let a second run re-enter and open a dup PR.)
+    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r2")
+    prior = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
+    fake = FakeGitHub(comments={5: [{"user": {"login": "agentA"}, "body": prior}]})
+    with client_for(fake) as gh:
+        result = gh.try_claim(5, "issue", now=NOW)
+    assert result.claimed is False
+    assert fake.posted == []  # someone else owns it; don't post
+
+
+def test_try_claim_loses_readback_race_to_earlier_run(monkeypatch):
+    # Race: on our first read the target looks free, so we post a claim — but a
+    # concurrent run (r1) posted its claim just before ours. On read-back, the earlier
+    # claim wins (first-come-first-served) and we stand down instead of also proceeding.
+    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r2")
+    earlier = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
+    state = {"reads": 0, "ours": None}
+
+    def handler(request):
+        p, m = request.url.path, request.method
+        if m == "GET" and p.endswith("/comments"):
+            state["reads"] += 1
+            if state["reads"] == 1:
+                return httpx.Response(200, json=[])  # looked free when we checked
+            # after we posted: the earlier concurrent claim is chronologically first
+            return httpx.Response(200, json=[
+                {"user": {"login": "agentA"}, "body": earlier},
+                {"user": {"login": "agentA"}, "body": state["ours"]},
+            ])
+        if m == "POST" and p.endswith("/comments"):
+            state["ours"] = json.loads(request.content)["body"]
+            return httpx.Response(201, json={"id": 2, "body": state["ours"]})
+        return httpx.Response(404, json={"m": p})
+
+    with _client_with(handler) as gh:
+        result = gh.try_claim(5, "issue", now=NOW)
+    assert result.claimed is False
+    assert "lost claim race" in result.reason
+    assert state["ours"] is not None  # we did post before discovering we lost
 
 
 def test_release_posts_release_marker():

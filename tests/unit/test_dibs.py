@@ -27,6 +27,34 @@ def test_non_marker_comments_ignored():
     assert markers == []
 
 
+def test_owning_claim_is_first_come_first_served_across_runs():
+    # Two runs of the same agent race to claim the same issue. The earliest claim
+    # wins regardless of read order — so both runs, reading the full list, agree.
+    first = _claim(run="rA")
+    second = _claim(run="rB")
+    markers = dibs.parse_markers([first, second])
+    owner = dibs.owning_claim(markers, "issue", NOW)
+    assert owner is not None and owner.run == "rA"  # first poster wins
+
+
+def test_owning_claim_none_when_free_released_or_expired():
+    # released after claim -> free
+    m = dibs.parse_markers([_claim(run="rA"), dibs.render_release("issue", "agentA", "rA", NOW)])
+    assert dibs.owning_claim(m, "issue", NOW) is None
+    # expired claim -> free
+    expired = dibs.parse_markers([_claim(run="rA", minutes=-1)])
+    assert dibs.owning_claim(expired, "issue", NOW) is None
+    # no markers -> free
+    assert dibs.owning_claim([], "issue", NOW) is None
+
+
+def test_owning_claim_skips_expired_earlier_claim():
+    # An expired earlier claim doesn't win; the still-active later claim owns it.
+    markers = dibs.parse_markers([_claim(run="old", minutes=-1), _claim(run="new", minutes=30)])
+    owner = dibs.owning_claim(markers, "issue", NOW)
+    assert owner is not None and owner.run == "new"
+
+
 def test_no_markers_means_claimable():
     markers = dibs.parse_markers(["hello"])
     assert dibs.active_claim(markers, "issue", NOW) is None

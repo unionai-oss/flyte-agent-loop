@@ -165,9 +165,27 @@ invisible HTML comment:
 ```
 
 `active_claim` walks the markers for a kind (issue/pr); the latest one wins. A
-`release` marker or an expired `until` frees the target. Claims are re-entrant
-for their owning agent. Because the logic is pure (comments + an explicit `now`),
-it is fully unit tested without any network.
+`release` marker or an expired `until` frees the target. Because the logic is pure
+(comments + an explicit `now`), it is fully unit tested without any network.
+
+**Ownership is per-*run*, not per-agent.** Every scheduled run shares the same
+`agent` id, so a claim is keyed on the unique `run` id stamped into each marker.
+`try_claim` therefore:
+
+1. **Stands down** if another *run* already owns an unexpired claim — even one by the
+   same agent (this closes a re-entrancy leak where a later run treated an earlier
+   run's claim as "held by me" and worked the issue anyway).
+2. **Resolves same-instant races** by *claim-then-read-back*: it posts its claim, then
+   re-reads the comments and lets `owning_claim` pick the **first-come-first-served**
+   winner (the chronologically earliest claim). The loser stands down *before* wasting
+   a build. Because the earliest claim is stable once posted, both racing runs agree on
+   the winner regardless of read-back order.
+
+Dibs is still best-effort (GitHub comments offer no atomic compare-and-swap), so the
+builder adds an **authoritative pre-open guard**: right before opening a PR it
+re-checks `issues_with_open_prs()` and skips if a concurrent run already opened one for
+the same issue. Between the FCFS read-back and this guard, two runs firing at once no
+longer both open a duplicate PR.
 
 ## Shared memory
 
@@ -192,9 +210,12 @@ paths (identical re-uploads are no-ops) and `-context` has a single writer.
 These are deliberate simplifications for a minimal system, called out so they are
 not mistaken for guarantees:
 
-- **Dibs is best-effort, not a mutex.** Two runs that read an unclaimed
-  issue/PR in the same instant can both post a claim (a TOCTOU window). The TTL
-  + agent id make the collision visible and self-healing; they don't prevent it.
+- **Dibs is best-effort, not a mutex.** Two runs racing for the same issue/PR are
+  resolved by a first-come-first-served claim read-back (loser stands down) and, for
+  the builder, an authoritative pre-open PR guard — so a duplicate PR needs *both* the
+  read-back to miss (only under GitHub read-after-write lag) *and* both runs to hit the
+  PR-open call within the same sub-second. Much narrower than before, but since GitHub
+  comments have no atomic compare-and-swap it is still a window, not an impossibility.
 - **Pipeline 3 overlap.** `distiller` is not itself protected by dibs. If one run
   exceeds its 10-minute cadence, an overlapping run can last-writer-win on the
   `-context` store. Ingestion is id-keyed so records aren't double-counted within
