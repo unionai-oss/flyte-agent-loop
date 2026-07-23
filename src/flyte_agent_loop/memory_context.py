@@ -134,7 +134,7 @@ async def delete_run_records(settings: Settings, rel_paths: list[str]) -> int:
             removed += 1
         except FileNotFoundError:
             removed += 1  # already gone — treat as pruned
-        except Exception as exc:  # noqa: BLE001 — best-effort; never fail the distiller
+        except Exception as exc:  # best-effort; never fail the distiller on a prune
             flyte.logger.warning("failed to delete run memory %s: %s", rel, exc)
     return removed
 
