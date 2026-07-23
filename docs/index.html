@@ -244,6 +244,113 @@ flowchart TD
     </div>
   </section>
 
+  <!-- 4a — CRASH COURSE: AGENT -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Flyte 2 crash course · 1/4</div>
+        <h2>An <code>Agent</code> is a<br/>tool-using loop</h2>
+        <p class="sub"><code>flyte.ai.agents.Agent</code> wraps the model + a tool-calling loop. Give it instructions, a model, and tools; <code>.run()</code> drives the loop and returns an <code>AgentResult</code>.</p>
+        <p class="sub" style="color:var(--faint)">Docs: <a href="https://www.union.ai/docs/v2/union/user-guide/build-agent/">union.ai → Build an agent</a></p>
+      </div>
+      <div class="card">
+        <pre><span class="k">from</span> flyte.ai.agents <span class="k">import</span> Agent
+
+agent = <span class="f">Agent</span>(
+    name=<span class="s">"issue-builder"</span>,
+    instructions=<span class="s">"Implement a GitHub issue…"</span>,
+    model=<span class="s">"claude-sonnet-4-5"</span>,
+    tools=[read_issue, stage_file, <span class="f">…</span>],
+    max_turns=<span class="f">40</span>,
+    parallel_tool_calls=<span class="k">False</span>,
+)
+
+result = <span class="k">await</span> agent.run.aio(<span class="s">"Implement #42"</span>)
+result.summary   <span class="c"># final text · also .error .attempts</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4b — CRASH COURSE: TOOLS -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Flyte 2 crash course · 2/4</div>
+        <h2>Tools are just<br/>Flyte tasks</h2>
+        <p class="sub">Hand the agent any callable. A <code>@env.task</code> tool dispatches as a <strong>durable, tracked sub-action</strong> — retries, caching, and a place in the run's timeline — so the agent's tool calls are first-class Flyte executions.</p>
+        <p class="sub" style="color:var(--faint)">The model sees the type hints + docstring as the tool schema.</p>
+      </div>
+      <div class="card">
+        <pre><span class="c"># durable: each call is a tracked action</span>
+<span class="f">@env.task</span>
+<span class="k">async def</span> <span class="f">read_issue</span>(number: <span class="k">int</span>) -&gt; <span class="k">dict</span>:
+    <span class="s">"""Fetch an issue's title and body."""</span>
+    <span class="k">with</span> _client() <span class="k">as</span> gh:
+        <span class="k">return</span> gh.get_issue(number)
+
+<span class="c"># or a lightweight in-process tool</span>
+<span class="f">@tool</span>
+<span class="k">def</span> <span class="f">stage_file</span>(path: <span class="k">str</span>, content: <span class="k">str</span>) -&gt; <span class="k">str</span>:
+    <span class="s">"""Stage one file for the change."""</span>
+    stage.files[path] = content
+    <span class="k">return</span> <span class="s">f"staged {path}"</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4c — CRASH COURSE: MEMORY -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Flyte 2 crash course · 3/4</div>
+        <h2>Durable memory<br/>across runs</h2>
+        <p class="sub"><code>MemoryStore</code> is a keyed, versioned filesystem on object storage. Agents read and write it <em>between</em> executions — this is the state that makes a <strong>loop</strong> out of independent runs.</p>
+        <p class="sub" style="color:var(--faint)">Read-only prefixes + an audit log keep multi-writer memory safe.</p>
+      </div>
+      <div class="card">
+        <pre><span class="k">from</span> flyte.ai.agents <span class="k">import</span> MemoryStore
+
+store = <span class="k">await</span> MemoryStore.get_or_create.aio(
+    key=<span class="s">"agent-loop-shared"</span>,
+)
+
+<span class="k">await</span> store.write_json.aio(<span class="s">"runs/42.json"</span>, record)
+digest = <span class="k">await</span> store.read_text.aio(
+    <span class="s">"context/digest.md"</span>, default=<span class="s">""</span>,
+)
+<span class="k">await</span> store.save.aio()   <span class="c"># persist to object storage</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4d — CRASH COURSE: SCHEDULE -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Flyte 2 crash course · 4/4</div>
+        <h2>From agent to<br/>autonomous service</h2>
+        <p class="sub">Wrap the agent in a scheduled <code>@env.task</code> and it becomes self-running: <strong>cron triggers</strong>, injected <strong>secrets</strong>, containerized execution, and a live <strong>report</strong> UI — no extra infra. <code>flyte deploy</code> activates it.</p>
+      </div>
+      <div class="card">
+        <pre><span class="k">import</span> flyte
+
+env = flyte.<span class="f">TaskEnvironment</span>(
+    name=<span class="s">"agent-loop"</span>,
+    secrets=[flyte.Secret(<span class="s">"github-token"</span>)],
+)
+
+<span class="f">@env.task</span>(report=<span class="k">True</span>, triggers=[flyte.<span class="f">Trigger</span>(
+    name=<span class="s">"every_5m"</span>,
+    automation=flyte.<span class="f">Cron</span>(<span class="s">"*/5 * * * *"</span>),
+)])
+<span class="k">async def</span> <span class="f">builder</span>() -&gt; RunRecord:
+    result = <span class="k">await</span> agent.run.aio(prompt)
+    flyte.report.log(<span class="s">f"opened PR …"</span>)
+    <span class="k">return</span> record</pre>
+      </div>
+    </div>
+  </section>
+
   <!-- 5 — BUILDER -->
   <section class="slide">
     <div class="wrap">
@@ -510,7 +617,7 @@ flowchart TD
   <span class="brand"><b>flyte-agent-loop</b></span>
   <span class="repo">· loop engineering with Flyte 2</span>
   <span class="spacer"></span>
-  <span class="count"><span id="cur">1</span> / <span id="tot">15</span></span>
+  <span class="count"><span id="cur">1</span> / <span id="tot">19</span></span>
 </div>
 
 <script>
