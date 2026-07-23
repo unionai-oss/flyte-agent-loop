@@ -18,6 +18,11 @@ The distiller agent itself runs in the task body (in-process, like the builder /
 reviewer agents). Shared memory is only rewritten when there are genuinely NEW
 records — already-ingested issues/PRs never trigger a re-consolidation.
 
+"No work" runs — ones that exited early without claiming any issue/PR, so they
+dispatched no actions and carry no signal — are excluded from every downstream step
+and **retroactively deleted** from the ``-runs`` store (``_prune_no_work``), keeping
+the memory (and its Run Traces view) to runs that actually did something.
+
 Steps avoid taking :class:`Settings` as an argument (it holds the GitHub token,
 which would be checkpointed into stored literals); each calls ``load_settings()``
 from the injected environment instead.
@@ -38,6 +43,7 @@ from .evals import (
     EvalSummary,
     IngestState,
     RunRecord,
+    did_no_work,
     evaluate,
     ingest_new_records,
     render_ingested_targets,
@@ -48,6 +54,7 @@ from .evals import (
 from .introspect import SubAction, trace_runs
 from .memory_context import (
     MemoryFile,
+    delete_run_records,
     load_ingest_state,
     load_run_records_with_ids,
     read_lessons,
@@ -80,6 +87,14 @@ TRIGGER = flyte.Trigger(
 async def _load_records() -> List[Tuple[str, RunRecord]]:
     """Load all run records (with their unique memory-path ids) from shared memory."""
     return await load_run_records_with_ids(load_settings())
+
+
+@flyte.trace
+async def _prune_no_work(rel_paths: List[str]) -> int:
+    """Retroactively delete "no work" run memories (exited early, no actions) from the
+    shared ``-runs`` store. ``rel_paths`` are their memory-path ids. Returns the count
+    removed. Best-effort — never fails the distiller."""
+    return await delete_run_records(load_settings(), rel_paths)
 
 
 @flyte.trace
@@ -179,8 +194,24 @@ async def distiller() -> dict[str, Any]:
         install_live_report_flush()  # surface the distiller agent's consolidation live
 
         records_with_ids = await _load_records()
+        log.info("distiller: loaded %d run record(s)", len(records_with_ids))
+
+        # Exclude (and retroactively delete) "no work" runs — ones that exited early
+        # without claiming a target, so they dispatched no actions and carry no signal.
+        # Everything downstream (ingest, metrics, distillation, run traces) sees only
+        # the records that did real work.
+        no_work_ids = [rid for rid, rec in records_with_ids if did_no_work(rec)]
+        records_with_ids = [(rid, rec) for rid, rec in records_with_ids if not did_no_work(rec)]
         records = [rec for _, rec in records_with_ids]
-        log.info("distiller: loaded %d run record(s)", len(records))
+        if no_work_ids:
+            with flyte.group("prune"):
+                pruned = await _prune_no_work(no_work_ids)
+            log.info("distiller: pruned %d no-work run memory/memories (of %d flagged)",
+                     pruned, len(no_work_ids))
+            flyte.report.log(
+                f"<p>pruned {pruned} no-work run record(s) "
+                f"(exited early, no actions) from shared memory</p>"
+            )
 
         state, new_records = await _ingest(records_with_ids, iso(now))
         ingested_count = len(new_records)

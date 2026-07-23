@@ -99,6 +99,46 @@ async def load_run_records(settings: Settings) -> list[RunRecord]:
     return [rec for _, rec in await load_run_records_with_ids(settings)]
 
 
+async def delete_run_records(settings: Settings, rel_paths: list[str]) -> int:
+    """Best-effort delete of run-record files from the ``-runs`` store's remote root.
+
+    ``rel_paths`` are store-relative ids (``runs/<ts>_<run>.json`` — the same ids
+    returned by :func:`load_run_records_with_ids`). Used by the distiller to
+    *retroactively* drop "no work" run memories. The ``-runs`` store is only ever
+    read by the distiller, so removing a remote blob is durable — no local ``save``
+    re-uploads it. Deletion is best-effort: a missing file counts as removed, and a
+    backend without a usable delete is logged and skipped (the records are excluded
+    from distillation regardless).
+    """
+    if not rel_paths:
+        return 0
+
+    import flyte
+    import flyte.storage as storage
+
+    store = await _open(_runs_key(settings))
+    base = (store.remote_path or store._require_remote_path()).rstrip("/")
+    fs = storage.get_underlying_filesystem(path=base)
+    rm = getattr(fs, "rm", None) or getattr(fs, "delete", None)
+    if rm is None:
+        flyte.logger.warning(
+            "shared-memory backend exposes no delete; skipping prune of %d file(s)", len(rel_paths)
+        )
+        return 0
+
+    removed = 0
+    for rel in rel_paths:
+        full = f"{base}/{rel.lstrip('/')}"
+        try:
+            rm(full)
+            removed += 1
+        except FileNotFoundError:
+            removed += 1  # already gone — treat as pruned
+        except Exception as exc:  # noqa: BLE001 — best-effort; never fail the distiller
+            flyte.logger.warning("failed to delete run memory %s: %s", rel, exc)
+    return removed
+
+
 async def load_ingest_state(settings: Settings) -> IngestState:
     """Load pipeline 3's ingestion ledger (empty if it has never run)."""
     store = await _open(_context_key(settings))

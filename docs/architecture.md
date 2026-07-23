@@ -19,7 +19,7 @@ flowchart TD
 
     repo -->|open issues and PRs| builder
     repo -->|open PRs and comments| reviewer
-    builder -->|opens PR| repo
+    builder -->|opens PR or files issues| repo
     reviewer -->|pushes fixes| repo
 
     mem -->|reads records| distiller
@@ -34,20 +34,40 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
 
 ### 1. `builder` — every 5 minutes (`builder_agent.py`)
 
-1. **Dibs.** List open issues; skip any that already have an associated open PR,
-   then for the first one with no active claim post a dibs marker comment
-   (`try_claim`). Concurrent/future runs see the marker and skip it until it
-   expires (`FLYTE_AGENT_DIBS_TTL_MINUTES`) or is released.
-2. **Build.** A `flyte.ai.agents.Agent` (read GitHub tools + the shared context
-   digest) implements the change scoped to what the issue asks for, **staging each
-   file via a `stage_file` tool** rather than returning one giant JSON blob (see
-   *File staging* below).
-3. **Verify.** A stricter verifier sub-agent checks the plan for correctness and
-   completeness, returning a structured `{"verified": bool, "notes": ...}`.
-4. **Create PR.** Only if verified, the pipeline opens a PR
-   (`open_pr_with_changes`, a durable tool task). If not verified, it posts the
-   verifier feedback to the issue and releases the claim for a retry.
-5. **Record.** Append a `RunRecord` to shared memory.
+Depending on the claimed issue, the builder produces **one of two outcomes**: it
+opens a **pull request** (when the issue wants code) or files **new issues** (when the
+issue asks it to read a spec and break the work up). Both share the same
+propose → verify → durable-write shape.
+
+1. **Dibs.** List open issues; skip any that already have an associated open PR or
+   an **unresolved upstream dependency**, then for the first one with no active claim
+   post a dibs marker comment (`try_claim`). Concurrent/future runs see the marker and
+   skip it until it expires (`FLYTE_AGENT_DIBS_TTL_MINUTES`) or is released.
+   *Dependencies:* an issue may declare `depends on #N` (or the hidden
+   `flyte-agent-loop:depends-on` marker); it's eligible only when every upstream
+   `#N` is closed (or has none).
+2. **Build (propose).** A `flyte.ai.agents.Agent` (read-only GitHub tools + the shared
+   context digest) stages a proposal — never a direct write. Two paths:
+   - *Code:* stage each file via `stage_file` then `submit_implementation` (rather than
+     one giant JSON blob — see *File staging* below).
+   - *Decompose:* for a spec issue, stage each work item via `stage_issue(key, title,
+     body, depends_on)` — dependencies expressed by local `key`, not yet-unknown issue
+     numbers — then `submit_decomposition`.
+3. **Verify.** A stricter verifier sub-agent checks the proposal (a code plan for
+   correctness/completeness, or a decomposition for coverage, scoping, and an acyclic
+   dependency graph), returning `{"verified": bool, "notes": ...}`. On failure the
+   feedback + prior proposal are fed back for up to `FLYTE_AGENT_MAX_TRIES` attempts.
+4. **Apply (durable write).** Only if verified:
+   - *Code →* `open_pr_with_changes` commits the files and opens a PR.
+   - *Decompose →* `open_issues_from_decomposition` creates the sub-issues in
+     dependency order (mapping each local `key` to its real number so a dependent
+     records its upstream's number via the `depends-on` marker), then closes the spec
+     issue. The independent sub-issues can then be worked in parallel while dependents
+     wait for their upstreams to close.
+
+   If all attempts fail verification, the pipeline posts the feedback to the issue and
+   releases the claim for a retry.
+5. **Record.** Append a `RunRecord` (`opened_pr` / `opened_issues` / …) to shared memory.
 
 ### 2. `reviewer` — every 5 minutes (`reviewer_agent.py`)
 
@@ -74,6 +94,14 @@ that grow unbounded with history and have no report side-effects, isolated with
 their own retries/resources).
 
 1. `_load_records` — load every `RunRecord` **with its unique memory-path id**.
+1b. **Prune "no work" runs** (`_prune_no_work`) — runs that exited early *without
+   claiming an issue/PR* dispatched no actions and carry no signal. They're excluded
+   from every downstream step **and retroactively deleted** from the `-runs` store
+   (`did_no_work` = `action == "no_work"` **and no target claimed** — a `no_work` run
+   that *did* claim a target still ran the agent and has a real sub-action trace, so
+   it's kept). Deletion is durable: only the distiller reads `-runs`, so no local
+   `save()` re-uploads the removed blob. Best-effort — a delete failure is logged, and
+   the record is excluded regardless.
 2. `_ingest` — **fold only new records** into the ledger, **only if there is
    something new**. `select_new_records` filters out ids already processed; if none
    remain it returns no new records and shared memory is left untouched. Otherwise
@@ -173,8 +201,14 @@ not mistaken for guarantees:
   a run, but a lost `state.json` update would let the next run re-ingest.
 - **First page only.** The client fetches one page of issues/PRs/comments
   (50/100). A dibs marker beyond 100 comments won't be seen (→ possible re-claim).
-- **Unbounded growth.** `runs/` files and `processed_record_ids` accumulate; a
-  compaction/retention step would be needed for long-lived deployments.
+- **Unbounded growth.** `runs/` files and `processed_record_ids` accumulate. The
+  distiller prunes empty "no work" runs each cycle, but runs that did real work (and
+  their ids) are retained; a broader compaction/retention step would be needed for
+  long-lived deployments. Pruning is also racy against in-flight writers: a
+  builder/reviewer that opened the `-runs` store *before* a delete re-uploads its
+  whole local snapshot on `save()`, transiently resurrecting a just-pruned file. It
+  self-heals — the next distiller cycle re-prunes it — so `no_work` files never
+  accumulate, but a given cycle may not leave the store perfectly empty of them.
 - **Blocking I/O.** The GitHub client is synchronous `httpx`; calls block the
   task's event loop. Fine for these single-flight tasks, not for high fan-out.
 - **GitHub retry vs. hard egress.** The client retries transient failures

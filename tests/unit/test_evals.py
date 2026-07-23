@@ -4,6 +4,7 @@ from flyte_agent_loop.evals import (
     IngestState,
     RunRecord,
     compact_context,
+    did_no_work,
     evaluate,
     ingest_new_records,
     render_ingested_targets,
@@ -23,6 +24,18 @@ def test_empty_records():
     s = evaluate([])
     assert s.total_runs == 0
     assert s.success_rate == 0.0
+
+
+def test_did_no_work_only_for_early_exit_without_target():
+    # Exited early: no claimable issue/PR -> no target -> no actions dispatched.
+    assert did_no_work(_rec(action="no_work")) is True
+    assert did_no_work(_rec(action="no_work", target_number=None)) is True
+    # Claimed a target and the agent ran (dispatched tool sub-actions) but declined:
+    # that run has a real trace and must NOT be treated as "no work".
+    assert did_no_work(_rec(action="no_work", target_number=7)) is False
+    # Productive / error runs are never "no work".
+    assert did_no_work(_rec(action="opened_pr", target_number=7)) is False
+    assert did_no_work(_rec(action="error")) is False
 
 
 def test_success_rate_counts_verified_work_over_attempts():
@@ -47,6 +60,19 @@ def test_success_rate_counts_verified_work_over_attempts():
     assert round(s.verification_rate, 3) == round(2 / 3, 3)
     assert round(s.error_rate, 3) == round(1 / 6, 3)
     assert s.per_pipeline == {"issue_to_pr": 5, "pr_review": 1}
+
+
+def test_opened_issues_is_productive_verified_work():
+    records = [
+        _rec(action="opened_issues", verified=True, target_kind="issue", target_number=1),
+        _rec(action="opened_pr", verified=True, target_kind="issue", target_number=2),
+    ]
+    s = evaluate(records)
+    assert s.issues_opened == 1
+    assert s.prs_opened == 1
+    assert s.productive_runs == 2
+    assert s.verified_runs == 2
+    assert s.success_rate == 1.0  # both are verified work attempts
 
 
 def test_run_record_roundtrip():

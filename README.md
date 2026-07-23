@@ -1,6 +1,6 @@
-# flyte-agent-loop
+# Flyte Agent Loop Engineering
 
-A minimal but fully functional **loop-engineering** system built on
+A fully functional **loop-engineering** system built on
 [Flyte 2](https://www.union.ai/docs/v2/flyte/). Three scheduled
 `flyte.ai.agents.Agent` pipelines cooperate over a shared, durable memory to
 autonomously take GitHub issues all the way to reviewed pull requests — and then

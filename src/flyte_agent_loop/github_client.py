@@ -79,6 +79,70 @@ def referenced_issue_numbers(pr: dict[str, Any]) -> set[int]:
     return nums
 
 
+# Issue-dependency markers. The builder's ``create_issue`` tool writes a hidden
+# marker (parsed reliably) plus a human-readable "Depends on: #N" line. We also
+# parse the free-text "depends on / blocked by / requires #N" convention so
+# human-authored dependencies are honored too.
+DEPENDS_ON_MARKER = "flyte-agent-loop:depends-on"
+_DEPENDS_MARKER_RE = re.compile(re.escape(DEPENDS_ON_MARKER) + r"\s+([0-9,\s]+)")
+_DEPENDS_TEXT_RE = re.compile(r"(?i)\b(?:depends on|blocked by|requires)\b[:\s]*((?:#\d+[\s,and]*)+)")
+
+
+def parse_issue_dependencies(body: str) -> set[int]:
+    """Upstream issue numbers an issue declares a dependency on (marker + free text)."""
+    body = body or ""
+    deps: set[int] = set()
+    for m in _DEPENDS_MARKER_RE.finditer(body):
+        for tok in m.group(1).replace(" ", "").split(","):
+            if tok.isdigit():
+                deps.add(int(tok))
+    for m in _DEPENDS_TEXT_RE.finditer(body):
+        for num in re.findall(r"#(\d+)", m.group(1)):
+            deps.add(int(num))
+    return deps
+
+
+def blocking_dependencies(issue_body: str, issue_number: int, open_issue_numbers: set[int]) -> set[int]:
+    """Upstream deps of an issue that are still OPEN (unresolved).
+
+    Empty result ⇒ the issue is eligible to work on (no deps, or all resolved). An
+    upstream that is closed or does not exist is not in ``open_issue_numbers`` and so
+    is treated as resolved.
+    """
+    return (parse_issue_dependencies(issue_body) - {issue_number}) & open_issue_numbers
+
+
+def topological_order(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order staged sub-issues so each is emitted AFTER the ones it depends on.
+
+    Each issue is a dict with a local ``"key"`` and a ``"depends_on"`` list of other
+    issues' keys (the real GitHub numbers don't exist yet at staging time). The order
+    lets the creator resolve an upstream's real number before creating its dependents.
+
+    Best-effort and total: unknown dependency keys are ignored, and dependency cycles
+    are broken (back-edges dropped) so every issue is emitted exactly once. Ordering is
+    deterministic in the input order.
+    """
+    by_key = {i["key"]: i for i in issues}
+    ordered: list[dict[str, Any]] = []
+    placed: set[str] = set()
+
+    def visit(item: dict[str, Any], stack: frozenset[str]) -> None:
+        key = item["key"]
+        if key in placed:
+            return
+        for dep in item.get("depends_on", []) or []:
+            if dep in by_key and dep not in stack and dep != key:
+                visit(by_key[dep], stack | {key})
+        if key not in placed:
+            placed.add(key)
+            ordered.append(item)
+
+    for it in issues:
+        visit(it, frozenset())
+    return ordered
+
+
 # Hidden marker on the agent's "looks good" (LGTM) approval comment, used to
 # avoid re-posting the approval on every scheduled run.
 LGTM_MARKER = "<!-- flyte-agent-loop:lgtm v1 -->"
@@ -250,6 +314,30 @@ class GitHubClient:
             "state": it["state"],
             "url": it.get("html_url", ""),
         }
+
+    def create_issue(
+        self, *, title: str, body: str = "", depends_on: list[int] | None = None
+    ) -> dict[str, Any]:
+        """Create a new issue, encoding any ``depends_on`` upstream issue numbers.
+
+        Embeds a hidden dependency marker (parsed by :func:`parse_issue_dependencies`)
+        plus a human-readable "Depends on: #N" line.
+        """
+        full_body = body or ""
+        nums = sorted({int(n) for n in (depends_on or [])})
+        if nums:
+            marker = f"<!-- {DEPENDS_ON_MARKER} {','.join(str(n) for n in nums)} -->"
+            refs = ", ".join(f"#{n}" for n in nums)
+            full_body = f"{full_body}\n\n{marker}\n**Depends on:** {refs}".strip()
+        issue = self._post(f"/repos/{self.repo}/issues", {"title": title, "body": full_body})
+        return {"number": issue["number"], "url": issue.get("html_url", ""), "depends_on": nums}
+
+    def close_issue(self, number: int, comment: str = "") -> dict[str, Any]:
+        """Close an issue, optionally leaving a comment first."""
+        if comment:
+            self.add_comment(number, comment)
+        self._patch(f"/repos/{self.repo}/issues/{number}", {"state": "closed"})
+        return {"number": number, "state": "closed"}
 
     def list_comments(self, number: int) -> list[dict[str, Any]]:
         """Issue/PR conversation comments (chronological)."""

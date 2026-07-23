@@ -44,6 +44,33 @@ def test_issue_skip():
     assert plan.summary == "nothing to do"
 
 
+def test_issue_decomposition_staging_and_plan():
+    stage = ChangeStage(kind="issue")
+    t = _by_name(issue_builder_tools(stage))
+    t["stage_issue"]("schema", "Define the schema", "schema body", [])
+    t["stage_issue"]("api", "Build the API", "api body", ["schema"])
+    t["stage_issue"]("api", "Build the API v2", "api body v2", ["schema"])  # overwrite by key
+    t["submit_decomposition"]("split the spec into schema + api")
+
+    plan = stage.to_plan()
+    assert plan.action == "decompose"
+    assert plan.has_work
+    assert not plan.has_changes  # no files -> no PR
+    assert [i["key"] for i in plan.issues] == ["schema", "api"]
+    api = next(i for i in plan.issues if i["key"] == "api")
+    assert api["title"] == "Build the API v2"  # overwrite took effect
+    assert api["depends_on"] == ["schema"]
+    assert plan.summary == "split the spec into schema + api"
+
+
+def test_empty_decomposition_is_not_work():
+    stage = ChangeStage(kind="issue")
+    _by_name(issue_builder_tools(stage))["submit_decomposition"]("nothing to file")
+    plan = stage.to_plan()
+    assert plan.action == "decompose"
+    assert not plan.has_work  # no staged issues -> pipeline treats as no_work
+
+
 def test_no_submit_is_error():
     stage = ChangeStage(kind="issue")
     t = _by_name(issue_builder_tools(stage))

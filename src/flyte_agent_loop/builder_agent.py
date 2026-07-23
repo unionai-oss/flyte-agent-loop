@@ -1,18 +1,27 @@
-"""Pipeline 1 — pick up a GitHub issue and open a PR. Runs every 5 minutes.
+"""Pipeline 1 — pick up a GitHub issue and either open a PR or file issues. Every 5m.
+
+Depending on what the claimed issue asks for, the builder produces ONE of two
+outcomes: a **pull request** (when the issue wants code) or a set of **new issues**
+(when the issue asks it to read a spec and break the work into separate, dependency-
+linked issues). Both follow the same propose → verify → durable-write shape.
 
 Flow (each stage grouped via ``flyte.group`` so its agent/tool sub-actions are
 chunked together in the UI):
 
-1. ``claim`` — pick the first open issue that (a) has no associated open PR yet
-   and (b) is claimable, then call *dibs* on it so concurrent/future scheduled
-   runs skip it.
-2 + 3. ``build`` <-> ``verify`` loop — a builder agent stages each file of its
-   implementation via a ``stage_file`` tool, then a verifier sub-agent checks it.
-   If the verifier fails, its feedback and the prior staged solution are fed back
-   to the builder, which gets up to ``FLYTE_AGENT_MAX_TRIES`` (default 3) attempts
-   to satisfy the verifier.
-4. ``open_pr`` — once verified, open a PR with the changes. If all attempts are
-   exhausted, post the verifier's feedback to the issue and release the claim.
+1. ``claim`` — pick the first open issue that (a) has no associated open PR yet,
+   (b) has no unresolved upstream dependency (issues can declare ``depends on #N`` /
+   the ``flyte-agent-loop:depends-on`` marker; an issue is skipped while any upstream
+   is still open), and (c) is claimable, then call *dibs* on it so concurrent/future
+   scheduled runs skip it.
+2 + 3. ``build`` <-> ``verify`` loop — the builder agent stages a proposal with
+   read-only tools: either files (``stage_file`` → ``submit_implementation``) or
+   sub-issues (``stage_issue`` → ``submit_decomposition``). A verifier sub-agent
+   checks it; on failure its feedback and the prior proposal are fed back, up to
+   ``FLYTE_AGENT_MAX_TRIES`` (default 3) attempts.
+4. Apply, once verified — ``open_pr`` commits the files and opens a PR, OR
+   ``open_issues`` durably creates the sub-issues (wiring their dependencies) and
+   closes the spec. If all attempts are exhausted, post the verifier's feedback to the
+   issue and release the claim.
 5. Record the run in shared memory for the distiller pipeline.
 
 Any runtime error is caught at the top level: the claim (if held) is released so
@@ -36,10 +45,10 @@ from .common import iso, run_id, run_name, utcnow
 from .config import Settings, load_settings
 from .environments import env
 from .evals import RunRecord
-from .github_client import GitHubClient
+from .github_client import GitHubClient, blocking_dependencies
 from .memory_context import read_shared_context, record_run
 from .report_style import finalize_report, install_live_report_flush, link, render_memory_tab
-from .tools import open_pr_with_changes
+from .tools import open_issues_from_decomposition, open_pr_with_changes
 
 TRIGGER = flyte.Trigger(
     name="builder_every_5m",
@@ -96,10 +105,11 @@ async def builder() -> RunRecord:
                 result = await builder.run.aio(message)
             plan = stage.to_plan()
             log.info(
-                "builder: attempt %d/%d staged action=%s files=%d has_changes=%s error=%r",
-                attempt, settings.max_tries, plan.action, len(plan.files), plan.has_changes, plan.error,
+                "builder: attempt %d/%d staged action=%s files=%d issues=%d has_work=%s error=%r",
+                attempt, settings.max_tries, plan.action, len(plan.files), len(plan.issues),
+                plan.has_work, plan.error,
             )
-            if plan.error or not plan.has_changes:
+            if plan.error or not plan.has_work:
                 # Builder declined (skip) or produced nothing to verify — stop looping.
                 if plan.error:
                     log.warning(
@@ -120,7 +130,12 @@ async def builder() -> RunRecord:
 
             with flyte.group(f"verify:attempt-{attempt}"):
                 verifier = build_verifier_agent(settings)
-                verdict = parse_verdict((await verifier.run.aio(_verify_prompt(number, target, plan))).summary)
+                verify_prompt = (
+                    _verify_decomposition_prompt(number, target, plan)
+                    if plan.action == "decompose"
+                    else _verify_prompt(number, target, plan)
+                )
+                verdict = parse_verdict((await verifier.run.aio(verify_prompt)).summary)
             log.info(
                 "builder: attempt %d/%d verifier verified=%s notes=%s",
                 attempt, settings.max_tries, verdict.verified, verdict.notes,
@@ -150,7 +165,30 @@ async def builder() -> RunRecord:
                 ),
             )
 
-        # 4. Verified: open the PR.
+        # 4. Verified. Apply the plan durably — the two outcomes the pipeline supports:
+        #    a code change becomes a PR; a spec decomposition becomes new issues.
+        issue_link = link(target.get("url", ""), f"#{number}")
+
+        if plan.action == "decompose":
+            log.info("builder: verification PASSED for spec #%s on attempt %d; filing %d issue(s)",
+                     number, attempt, len(plan.issues))
+            with flyte.group("open_issues"):
+                result = await open_issues_from_decomposition.aio(spec_number=number, issues=plan.issues)
+            created = result.get("created", [])
+            log.info("builder: filed %d issue(s) from spec #%s and closed it", len(created), number)
+            links = ", ".join(link(c["url"], f"#{c['number']}") for c in created) or "(none)"
+            flyte.report.log(f"<p>decomposed spec {issue_link} into {links} (spec closed)</p>")
+            return await _finish(
+                settings,
+                _record(
+                    rid, now, "opened_issues", number=number, attempts=attempt,
+                    verified=True, verifier_notes=verdict.notes,
+                    summary=f"Filed {len(created)} issue(s) from spec #{number}: "
+                            f"{', '.join('#' + str(c['number']) for c in created)}".strip(),
+                ),
+            )
+
+        # Code change → open the PR.
         log.info("builder: verification PASSED for issue #%s on attempt %d; opening PR", number, attempt)
         with flyte.group("open_pr"):
             branch = str(plan.raw.get("branch") or f"agent/issue-{number}")
@@ -163,7 +201,6 @@ async def builder() -> RunRecord:
             )
         log.info("builder: opened PR #%s (%s) for issue #%s", pr["number"], pr["url"], number)
         pr_link = link(pr["url"], f"#{pr['number']}")
-        issue_link = link(target.get("url", ""), f"#{number}")
         flyte.report.log(f"<p>opened PR {pr_link} for issue {issue_link}</p>")
         return await _finish(
             settings,
@@ -215,8 +252,33 @@ def _build_message(repo: str, number: int, target: dict) -> str:
     return f"Implement GitHub issue #{number} in repo {repo}. Title: {target['title']}"
 
 
+def _render_staged_issues(issues: list[dict]) -> str:
+    """Human-readable rendering of the builder's staged sub-issue breakdown."""
+    if not issues:
+        return "(no issues staged)"
+    lines = []
+    for i in issues:
+        deps = ", ".join(i.get("depends_on", []) or []) or "none"
+        body = (i.get("body") or "").strip()
+        if len(body) > 600:
+            body = body[:600] + " …[truncated]"
+        lines.append(f"- [{i.get('key')}] {i.get('title')} (depends_on: {deps})\n  {body}")
+    return "\n".join(lines)
+
+
 def _retry_message(number: int, target: dict, prior_plan, verdict, attempt: int, max_tries: int) -> str:
     """Retry instruction: feed back the verifier's feedback + the prior solution."""
+    if prior_plan.action == "decompose":
+        return (
+            f"Your previous decomposition of spec issue #{number} ({target['title']}) was REJECTED by "
+            f"the verifier. This is attempt {attempt} of {max_tries}.\n\n"
+            f"Verifier feedback (address ALL of it):\n{verdict.notes}\n\n"
+            f"Your previous breakdown is below. Revise it, then re-stage EVERY sub-issue you want "
+            f"(staging replaces the previous staging) via stage_issue and call submit_decomposition "
+            f"again. Keep the parts that were right; change only what's needed.\n\n"
+            f"Prior summary: {prior_plan.summary}\n\n"
+            f"Prior staged issues ({len(prior_plan.issues)}):\n{_render_staged_issues(prior_plan.issues)}"
+        )
     return (
         f"Your previous attempt to implement issue #{number} ({target['title']}) was REJECTED by the "
         f"verifier. This is attempt {attempt} of {max_tries}.\n\n"
@@ -226,6 +288,26 @@ def _retry_message(number: int, target: dict, prior_plan, verdict, attempt: int,
         f"Keep the parts that were correct; change only what's needed.\n\n"
         f"Prior summary: {prior_plan.summary}\n\n"
         f"Prior staged files ({len(prior_plan.files)}):\n\n{render_plan_files(prior_plan.files)}"
+    )
+
+
+def _verify_decomposition_prompt(number: int, target: dict, plan) -> str:
+    """Ask the verifier to review a staged spec decomposition (no code, no PR)."""
+    body = (target.get("body") or "").strip()
+    if len(body) > 4000:
+        body = body[:4000] + "\n… [truncated]"
+    description = f"\n\nSpec issue description:\n{body}" if body else ""
+    return (
+        f"Objective: correctly decompose spec issue #{number} ({target['title']}) into well-scoped "
+        f"sub-issues.{description}\n\n"
+        f"Proposed summary: {plan.summary}\n\n"
+        f"The agent proposes filing these sub-issues (NOT yet created). Each has a local key and the "
+        f"keys of the siblings it depends on:\n\n{_render_staged_issues(plan.issues)}\n\n"
+        f"You may read the referenced spec/repo files to check coverage. Verify that the breakdown: "
+        f"(1) covers the spec's work without large gaps or duplication, (2) is split into independently "
+        f"workable, well-scoped issues, and (3) has sensible, acyclic dependencies (an item depends on "
+        f"another only when it genuinely needs it first). Do not require more granularity than the spec "
+        f"warrants."
     )
 
 
@@ -255,19 +337,30 @@ def _verify_prompt(number: int, target: dict, plan) -> str:
 
 
 def _claim_open_issue(settings: Settings, now) -> dict | None:
-    """Claim and return the FIRST eligible open issue (at most one per run)."""
+    """Claim and return the FIRST eligible open issue (at most one per run).
+
+    An issue is skipped when it already has an associated open PR, or when it declares
+    a dependency on an upstream issue that is still open (unresolved). Issues with no
+    dependencies — or whose upstreams are all closed — are eligible.
+    """
     with GitHubClient(settings) as gh:
-        # Skip issues that already have an associated open PR — they're being (or
-        # have been) implemented; a new run should not re-implement them.
+        open_issues = gh.list_open_issues()
+        open_numbers = {i["number"] for i in open_issues}
         linked = gh.issues_with_open_prs()
-        for issue in gh.list_open_issues():
-            if issue["number"] in linked:
-                flyte.report.log(f"<p>issue #{issue['number']} skipped: already has an open PR</p>")
+        for issue in open_issues:
+            number = issue["number"]
+            if number in linked:
+                flyte.report.log(f"<p>issue #{number} skipped: already has an open PR</p>")
                 continue
-            claim = gh.try_claim(issue["number"], "issue", now=now)
+            blocking = blocking_dependencies(issue["body"], number, open_numbers)
+            if blocking:
+                refs = ", ".join(f"#{n}" for n in sorted(blocking))
+                flyte.report.log(f"<p>issue #{number} skipped: blocked by unresolved {refs}</p>")
+                continue
+            claim = gh.try_claim(number, "issue", now=now)
             if claim.claimed:
                 return issue  # stop at the first claim — one issue per run
-            flyte.report.log(f"<p>issue #{issue['number']} skipped: {claim.reason}</p>")
+            flyte.report.log(f"<p>issue #{number} skipped: {claim.reason}</p>")
     return None
 
 

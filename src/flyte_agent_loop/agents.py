@@ -25,25 +25,39 @@ from .tools import ISSUE_BUILDER_TOOLS, ISSUE_VERIFIER_TOOLS, PR_REVIEWER_TOOLS
 _BUILDER_INSTRUCTIONS = """\
 You are an autonomous software engineer working a GitHub issue to completion.
 
-Workflow, given an issue number:
-1. Read the issue (and its comments) to understand exactly what it asks for.
-2. Explore the repository (list_repo_files, read_repo_file) to match existing
-   conventions.
-3. Implement the change, scoped to what the issue actually asks for — include only
+First read the issue (and its comments) and explore the repository (list_repo_files,
+read_repo_file) to understand exactly what it asks for. Then choose ONE of two paths.
+
+PATH A — WRITE CODE (the common case): the issue asks for an actual change.
+1. Implement the change, scoped to what the issue actually asks for — include only
    the parts it warrants: tests when you add or change behavior, and an example
    and/or documentation when the change is user-facing. A small fix, config tweak,
-   or doc-only issue may need none of the extras; a new feature usually needs
-   tests. Don't pad the PR with artifacts the issue doesn't call for.
-4. Stage each file for the PR by calling `stage_file(path, content)` with the
-   COMPLETE file content — one call per file (staging the same path overwrites it;
-   `unstage_file(path)` removes one). Never paste file contents into your text
-   replies; always use `stage_file`.
-5. When ALL files are staged, call `submit_implementation(branch, title, body,
-   summary)` to finalize, using a branch like `agent/issue-<number>-<slug>`.
+   or doc-only issue may need none of the extras; a new feature usually needs tests.
+   Don't pad the PR with artifacts the issue doesn't call for.
+2. Stage each file by calling `stage_file(path, content)` with the COMPLETE file
+   content — one call per file (staging the same path overwrites it; `unstage_file(
+   path)` removes one). Never paste file contents into your text replies.
+3. When ALL files are staged, call `submit_implementation(branch, title, body,
+   summary)`, using a branch like `agent/issue-<number>-<slug>`. The pipeline opens
+   the PR after a verifier reviews the staged change.
 
-You do NOT open the pull request yourself; a verifier reviews the staged change
-first. If no code change is warranted, call `skip_issue(reason)` instead. After
-submitting (or skipping), reply with a brief plain-text summary.
+PATH B — FILE ISSUES (a spec-decomposition issue): the issue does NOT ask you to
+write code — it asks you to read a spec/markdown file in the repo and break the work
+into SEPARATE issues. Choose this ONLY when the issue explicitly asks for it.
+1. Read the spec (`read_repo_file`) and identify the discrete work items.
+2. For each work item call `stage_issue(key, title, body, depends_on)`. Pick a short
+   local `key` per item (e.g. "schema", "api", "docs"); set `depends_on` to the keys
+   of the sibling items it depends on. Independent items → empty `depends_on` (they
+   can be worked in parallel); dependent items list their upstream keys. You do NOT
+   need real issue numbers — the pipeline assigns them, creating issues in dependency
+   order so upstreams exist before their dependents.
+3. When ALL work items are staged, call `submit_decomposition(summary)`. The pipeline
+   opens the issues (wiring the dependencies) and closes this spec issue after a
+   verifier reviews the breakdown. Do NOT stage files on this path.
+
+If neither path is warranted, call `skip_issue(reason)`. You never open PRs, create
+issues, or close issues yourself — you stage a proposal and the pipeline applies it
+after verification. After submitting (or skipping), reply with a brief summary.
 """
 
 _REVIEWER_INSTRUCTIONS = """\
@@ -107,7 +121,7 @@ class Verdict:
 class Plan:
     """A parsed change plan proposed by the builder or reviewer agent."""
 
-    action: str  # implement | skip | fix | no_changes
+    action: str  # implement | decompose | skip | fix | no_changes
     files: dict[str, str]
     summary: str
     raw: dict
@@ -116,6 +130,18 @@ class Plan:
     @property
     def has_changes(self) -> bool:
         return self.action in {"implement", "fix"} and bool(self.files)
+
+    @property
+    def issues(self) -> list[dict]:
+        """Staged sub-issues for a ``decompose`` plan (empty otherwise)."""
+        return list(self.raw.get("issues", [])) if self.action == "decompose" else []
+
+    @property
+    def has_work(self) -> bool:
+        """Whether the plan carries something to apply — files to commit or issues to
+        open. A ``decompose`` plan with no staged issues, like an ``implement`` plan
+        with no files, is not work."""
+        return self.has_changes or bool(self.issues)
 
 
 def _model(settings: Settings) -> str:

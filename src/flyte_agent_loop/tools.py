@@ -14,7 +14,7 @@ from typing import Any
 
 from .config import load_settings
 from .environments import env
-from .github_client import GitHubClient
+from .github_client import GitHubClient, topological_order
 
 
 def _client() -> GitHubClient:
@@ -128,11 +128,42 @@ async def push_changes_to_pr(
         return {"pr_number": pr_number, "branch": pr["head"], "commit": sha}
 
 
+@env.task
+async def open_issues_from_decomposition(
+    spec_number: int, issues: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Create decomposed sub-issues and close the originating spec issue.
+
+    ``issues`` is the builder's staged breakdown — each a dict of ``{key, title, body,
+    depends_on}`` where ``depends_on`` lists sibling ``key`` s (not GitHub numbers).
+    Issues are created in dependency order so an upstream's real number is known before
+    its dependents are created; each new issue records its resolved upstream numbers
+    (so the builder later skips a sub-issue until its upstreams close). Finally the
+    spec issue is closed with a comment linking the created issues.
+    """
+    with _client() as gh:
+        key_to_number: dict[str, int] = {}
+        created: list[dict[str, Any]] = []
+        for item in topological_order(issues):
+            dep_numbers = [key_to_number[k] for k in item.get("depends_on", []) if k in key_to_number]
+            result = gh.create_issue(
+                title=item["title"], body=item.get("body", ""), depends_on=dep_numbers
+            )
+            key_to_number[item["key"]] = result["number"]
+            created.append({"key": item["key"], "number": result["number"], "url": result["url"]})
+        refs = ", ".join(f"#{c['number']}" for c in created)
+        gh.close_issue(
+            spec_number,
+            comment=f"🤖 flyte-agent-loop decomposed this spec into {refs or '(no sub-issues)'}.",
+        )
+        return {"spec_number": spec_number, "created": created}
+
+
 # Tool groups handed to the agents. The builder/reviewer agents are given
 # READ-ONLY tools: they *propose* a change plan, which the pipeline verifies and
-# only then applies via ``open_pr_with_changes`` / ``push_changes_to_pr`` as
-# durable, tracked write actions. This enforces the "implement -> verify ->
-# write" ordering from the spec.
+# only then applies via ``open_pr_with_changes`` / ``push_changes_to_pr`` /
+# ``open_issues_from_decomposition`` as durable, tracked write actions. This enforces
+# the "propose -> verify -> write" ordering from the spec.
 ISSUE_BUILDER_TOOLS = [read_issue, read_issue_comments, read_repo_file, list_repo_files]
 PR_REVIEWER_TOOLS = [read_pr, read_pr_comments, read_pr_changes, read_repo_file, list_repo_files]
 

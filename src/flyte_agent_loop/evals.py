@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Sequence
 
 # Actions that represent the agent productively completing its objective.
-PRODUCTIVE_ACTIONS = {"opened_pr", "pushed_fixes"}
+PRODUCTIVE_ACTIONS = {"opened_pr", "pushed_fixes", "opened_issues"}
 # Actions that are legitimate no-ops (nothing to do / already claimed elsewhere).
 NEUTRAL_ACTIONS = {"skipped", "no_work"}
 
@@ -25,7 +25,7 @@ class RunRecord:
     pipeline: str  # "builder" | "reviewer"
     run_id: str
     timestamp: str  # ISO-8601
-    action: str  # opened_pr | pushed_fixes | skipped | no_work | error
+    action: str  # opened_pr | opened_issues | pushed_fixes | skipped | no_work | error
     repo: str = ""  # target GitHub repo, "owner/name"
     run_name: str = ""  # Flyte run name, for cross-run sub-action introspection
     target_kind: str = ""  # "issue" | "pr"
@@ -47,6 +47,18 @@ class RunRecord:
         return cls(**{k: v for k, v in data.items() if k in fields})
 
 
+def did_no_work(record: RunRecord) -> bool:
+    """True when a run exited early WITHOUT claiming a target — it dispatched no
+    actions at all (no agent turn, no tool sub-actions).
+
+    A ``no_work`` record that *did* claim a target (``target_number`` set) is NOT
+    "no work": the builder/reviewer agent ran and dispatched durable tool sub-actions
+    before deciding no change was warranted, so that run has a real sub-action trace
+    worth keeping. Only the "no claimable issue/PR" runs are empty shells.
+    """
+    return record.action == "no_work" and not record.target_number
+
+
 @dataclass
 class EvalSummary:
     """Aggregated metrics over a set of run records."""
@@ -58,6 +70,7 @@ class EvalSummary:
     verified_runs: int = 0
     prs_opened: int = 0
     fixes_pushed: int = 0
+    issues_opened: int = 0
     per_pipeline: dict[str, int] = field(default_factory=dict)
     # Success rate = verified productive work / attempts that tried to do work.
     success_rate: float = 0.0
@@ -197,6 +210,8 @@ def evaluate(records: Sequence[RunRecord]) -> EvalSummary:
                 summary.prs_opened += 1
             elif r.action == "pushed_fixes":
                 summary.fixes_pushed += 1
+            elif r.action == "opened_issues":
+                summary.issues_opened += 1
         elif r.action in NEUTRAL_ACTIONS:
             summary.neutral_runs += 1
         elif r.action == "error":
@@ -225,7 +240,8 @@ def compact_context(records: Sequence[RunRecord], summary: EvalSummary, max_less
         "",
         "Aggregate performance of prior agent runs (use this to avoid repeating mistakes):",
         f"- total runs: {summary.total_runs}",
-        f"- PRs opened: {summary.prs_opened}, fixes pushed: {summary.fixes_pushed}",
+        f"- PRs opened: {summary.prs_opened}, fixes pushed: {summary.fixes_pushed}, "
+        f"issues filed: {summary.issues_opened}",
         f"- success rate (verified work / work attempts): {summary.success_rate:.0%}",
         f"- verification rate: {summary.verification_rate:.0%}",
         f"- error rate: {summary.error_rate:.0%}",
@@ -278,7 +294,8 @@ def render_report_html(summary: EvalSummary, records: Sequence[RunRecord]) -> st
     <h2>flyte-agent-loop evaluation</h2>
     <ul>
       <li><b>Total runs:</b> {summary.total_runs}</li>
-      <li><b>PRs opened:</b> {summary.prs_opened} &nbsp; <b>Fixes pushed:</b> {summary.fixes_pushed}</li>
+      <li><b>PRs opened:</b> {summary.prs_opened} &nbsp; <b>Fixes pushed:</b> {summary.fixes_pushed}
+          &nbsp; <b>Issues filed:</b> {summary.issues_opened}</li>
       <li><b>Success rate:</b> {summary.success_rate:.0%}</li>
       <li><b>Verification rate:</b> {summary.verification_rate:.0%}</li>
       <li><b>Error rate:</b> {summary.error_rate:.0%}</li>

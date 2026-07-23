@@ -1,8 +1,11 @@
 """Tests for the distiller agent inputs (record rendering + consolidation prompt)."""
 
+import asyncio
+
 from flyte_agent_loop.config import Settings
 from flyte_agent_loop.evals import RunRecord, evaluate, render_records_brief
 from flyte_agent_loop.distiller_agent import _distill_prompt
+from flyte_agent_loop.memory_context import delete_run_records
 
 
 def _settings():
@@ -56,3 +59,9 @@ def test_distill_prompt_includes_prior_lessons_new_records_and_metrics():
 def test_distill_prompt_handles_no_prior_lessons():
     recs = [_rec()]
     assert "(none yet)" in _distill_prompt("", recs, evaluate(recs))
+
+
+def test_delete_run_records_noop_on_empty_needs_no_backend():
+    # With nothing to prune the distiller must not touch shared memory at all
+    # (no store open, no filesystem call) — so an empty list short-circuits to 0.
+    assert asyncio.run(delete_run_records(_settings(), [])) == 0

@@ -28,13 +28,15 @@ class ChangeStage:
 
     kind: str  # "issue" | "pr"
     files: dict[str, str] = field(default_factory=dict)
-    action: str = ""  # implement | fix | skip | no_changes | "" (never submitted)
+    action: str = ""  # implement | decompose | fix | skip | no_changes | "" (never submitted)
     branch: str = ""
     title: str = ""
     body: str = ""
     message: str = ""
     summary: str = ""
     addressed: list[str] = field(default_factory=list)
+    # Sub-issues staged for a spec decomposition: {key, title, body, depends_on:[keys]}.
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
     def to_plan(self) -> Plan:
         """Convert the staged state into the :class:`Plan` the pipeline expects."""
@@ -44,6 +46,13 @@ class ChangeStage:
                 files=dict(self.files),
                 summary=self.summary,
                 raw={"branch": self.branch, "title": self.title, "body": self.body},
+            )
+        if self.action == "decompose":
+            return Plan(
+                action="decompose",
+                files={},
+                summary=self.summary,
+                raw={"issues": [dict(i) for i in self.issues]},
             )
         if self.action == "fix":
             return Plan(
@@ -82,12 +91,22 @@ def _stage_file_tools(stage: ChangeStage) -> list[Callable[..., Any]]:
 
 
 def issue_builder_tools(stage: ChangeStage) -> list[Callable[..., Any]]:
-    """Staging tools for the issue builder (stage files, then submit or skip)."""
+    """Staging tools for the issue builder.
+
+    Two mutually-exclusive outcomes, both *staged* for the pipeline to verify then
+    apply as durable writes (the agent itself performs no writes):
+
+    * **Code change** — ``stage_file`` per file, then ``submit_implementation`` → PR.
+    * **Spec decomposition** — ``stage_issue`` per work item, then
+      ``submit_decomposition`` → the pipeline opens those issues.
+
+    Or ``skip_issue`` when neither is warranted.
+    """
     tools = _stage_file_tools(stage)
 
     @flyte.trace
     def submit_implementation(branch: str, title: str, body: str, summary: str) -> str:
-        """Finalize the implementation once ALL files are staged.
+        """Finalize a CODE change once ALL files are staged (leads to a PR).
 
         Provide the PR ``branch`` (e.g. ``agent/issue-<number>-<slug>``), PR
         ``title``, PR ``body``, and a one/two-sentence ``summary`` of what you did.
@@ -96,14 +115,41 @@ def issue_builder_tools(stage: ChangeStage) -> list[Callable[..., Any]]:
         stage.branch, stage.title, stage.body, stage.summary = branch, title, body, summary
         return f"submitted implementation with {len(stage.files)} file(s) staged"
 
+    def stage_issue(key: str, title: str, body: str = "", depends_on: list[str] | None = None) -> str:
+        """Stage ONE sub-issue to file when decomposing a spec (no PR/code).
+
+        ``key`` is a short local id you choose (e.g. ``"api"``) so other staged issues
+        can depend on it; ``depends_on`` lists the keys of sibling issues this one
+        depends on (independent items → leave empty so they can be worked in parallel).
+        Real GitHub numbers are assigned when the pipeline creates the issues in
+        dependency order. Staging the same ``key`` again overwrites it.
+        """
+        stage.issues = [i for i in stage.issues if i["key"] != key]
+        stage.issues.append(
+            {"key": key, "title": title, "body": body or "", "depends_on": list(depends_on or [])}
+        )
+        return f"staged issue '{key}': {title} (depends_on={depends_on or []}); {len(stage.issues)} staged"
+
+    @flyte.trace
+    def submit_decomposition(summary: str) -> str:
+        """Finalize a spec DECOMPOSITION once ALL sub-issues are staged.
+
+        The pipeline creates the staged issues (wiring their dependencies) and closes
+        the spec issue. Use this only when the issue asks you to break a spec into
+        separate issues — NOT to write code.
+        """
+        stage.action = "decompose"
+        stage.summary = summary
+        return f"submitted decomposition with {len(stage.issues)} issue(s) staged"
+
     @flyte.trace
     def skip_issue(reason: str) -> str:
-        """Declare that no code change is warranted for this issue, with a reason."""
+        """Declare that neither a code change nor a decomposition is warranted, with a reason."""
         stage.action = "skip"
         stage.summary = reason
         return "recorded: no change (skip)"
 
-    return [*tools, submit_implementation, skip_issue]
+    return [*tools, submit_implementation, stage_issue, submit_decomposition, skip_issue]
 
 
 def pr_reviewer_tools(stage: ChangeStage) -> list[Callable[..., Any]]:

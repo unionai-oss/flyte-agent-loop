@@ -377,6 +377,106 @@ def test_request_does_not_retry_4xx(monkeypatch):
     assert calls["n"] == 1  # 404 is a real error — not retried
 
 
+def test_parse_issue_dependencies_marker_and_text():
+    from flyte_agent_loop.github_client import DEPENDS_ON_MARKER, parse_issue_dependencies
+
+    assert parse_issue_dependencies(f"body\n<!-- {DEPENDS_ON_MARKER} 5,6 -->") == {5, 6}
+    assert parse_issue_dependencies("This depends on #5, #6 and #7") == {5, 6, 7}
+    assert parse_issue_dependencies("Blocked by #3") == {3}
+    assert parse_issue_dependencies("Requires #9") == {9}
+    # a bare mention without a dependency keyword is not a dependency
+    assert parse_issue_dependencies("relates to #99 for context") == set()
+    assert parse_issue_dependencies("") == set()
+
+
+def test_blocking_dependencies_open_vs_closed():
+    from flyte_agent_loop.github_client import DEPENDS_ON_MARKER, blocking_dependencies
+
+    body = f"<!-- {DEPENDS_ON_MARKER} 5,6 -->"
+    assert blocking_dependencies(body, 10, {5, 6, 10}) == {5, 6}  # both upstreams open
+    assert blocking_dependencies(body, 10, {5}) == {5}            # #6 closed -> only #5 blocks
+    assert blocking_dependencies(body, 10, set()) == set()        # all upstreams closed -> eligible
+    assert blocking_dependencies("no deps", 10, {5, 6}) == set()  # no dependencies -> eligible
+    # an issue can't block itself
+    assert blocking_dependencies(f"<!-- {DEPENDS_ON_MARKER} 10 -->", 10, {10}) == set()
+
+
+def test_create_issue_embeds_dependency_marker():
+    posted = {}
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/repos/acme/widgets/issues":
+            posted.update(json.loads(request.content))
+            return httpx.Response(201, json={"number": 42, "html_url": "https://github.com/acme/widgets/issues/42"})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    from flyte_agent_loop.github_client import DEPENDS_ON_MARKER
+
+    with _client_with(handler) as gh:
+        out = gh.create_issue(title="Add bar", body="do bar", depends_on=[6, 5, 5])
+    assert out == {"number": 42, "url": "https://github.com/acme/widgets/issues/42", "depends_on": [5, 6]}
+    assert posted["title"] == "Add bar"
+    assert f"<!-- {DEPENDS_ON_MARKER} 5,6 -->" in posted["body"]  # deduped + sorted
+    assert "**Depends on:** #5, #6" in posted["body"]
+
+
+def test_create_issue_without_dependencies():
+    posted = {}
+
+    def handler(request):
+        if request.method == "POST" and request.url.path.endswith("/issues"):
+            posted.update(json.loads(request.content))
+            return httpx.Response(201, json={"number": 7, "html_url": "u"})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        out = gh.create_issue(title="t", body="b")
+    assert out["number"] == 7 and out["depends_on"] == []
+    assert "depends-on" not in posted["body"]
+
+
+def test_close_issue_comments_then_patches_state():
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/issues/42/comments"):
+            return httpx.Response(201, json={"id": 1})
+        if request.method == "PATCH" and request.url.path.endswith("/issues/42"):
+            return httpx.Response(200, json={"number": 42, "state": "closed"})
+        return httpx.Response(404, json={"m": request.url.path})
+
+    with _client_with(handler) as gh:
+        out = gh.close_issue(42, comment="decomposed into #43 #44")
+    assert out == {"number": 42, "state": "closed"}
+    assert ("POST", "/repos/acme/widgets/issues/42/comments") in calls
+    assert ("PATCH", "/repos/acme/widgets/issues/42") in calls
+
+
+def test_topological_order_respects_dependencies():
+    from flyte_agent_loop.github_client import topological_order
+
+    issues = [
+        {"key": "docs", "depends_on": ["api"]},
+        {"key": "api", "depends_on": ["schema"]},
+        {"key": "schema", "depends_on": []},
+    ]
+    order = [i["key"] for i in topological_order(issues)]
+    assert order.index("schema") < order.index("api") < order.index("docs")
+    assert set(order) == {"schema", "api", "docs"}  # every issue emitted once
+
+
+def test_topological_order_tolerates_cycles_and_unknown_deps():
+    from flyte_agent_loop.github_client import topological_order
+
+    # A cycle must not hang or drop issues; each is emitted exactly once.
+    cyc = [{"key": "a", "depends_on": ["b"]}, {"key": "b", "depends_on": ["a"]}]
+    assert {i["key"] for i in topological_order(cyc)} == {"a", "b"}
+    # An unknown dependency key is ignored.
+    unk = [{"key": "a", "depends_on": ["ghost"]}]
+    assert [i["key"] for i in topological_order(unk)] == ["a"]
+
+
 def test_missing_repo_setting_raises(monkeypatch):
     from flyte_agent_loop.config import load_settings
 
