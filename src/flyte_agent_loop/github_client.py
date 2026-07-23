@@ -12,7 +12,9 @@ an injectable :class:`httpx.Client`.
 from __future__ import annotations
 
 import base64
+import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -22,12 +24,40 @@ import httpx
 from . import dibs
 from .config import Settings
 
+logger = logging.getLogger(__name__)
+
+# Retry a request on these transient conditions (with exponential backoff). Timeouts
+# — the failure mode we saw when a pod's egress to api.github.com is flaky — and
+# connection resets are retried; 4xx (except 429) are real errors and are not.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_EXCEPTIONS = (
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
+_MAX_BACKOFF_SECONDS = 8.0
+
 _SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
 def _is_sha(ref: str) -> bool:
     """Whether ``ref`` looks like a full 40-hex git object SHA (vs a branch name)."""
     return bool(_SHA_RE.match(ref))
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """Seconds to wait per the ``Retry-After`` header (GitHub sends it on 429)."""
+    value = resp.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return min(float(value), _MAX_BACKOFF_SECONDS * 2)
+    except ValueError:
+        return None
 
 
 # Signals that a PR is "associated" with an issue:
@@ -115,6 +145,7 @@ class GitHubClient:
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
         self.repo = settings.repo
+        self._max_retries = max(0, settings.http_retries)
         self._owns_client = client is None
         self._http = client or httpx.Client(
             base_url=settings.github_api_url,
@@ -124,7 +155,9 @@ class GitHubClient:
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "flyte-agent-loop",
             },
-            timeout=30.0,
+            # Split so a dead route fails the connect fast (and retries) instead of
+            # hanging for the full read timeout.
+            timeout=httpx.Timeout(settings.http_timeout, connect=min(10.0, settings.http_timeout)),
         )
 
     # -- lifecycle -----------------------------------------------------------
@@ -138,25 +171,46 @@ class GitHubClient:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
+    def _request(self, method: str, path: str, *, params: Any = None, json: Any = None) -> Any:
+        """Issue a request, retrying transient timeouts / 5xx / 429 with backoff."""
+        attempts = self._max_retries + 1
+        for attempt in range(attempts):
+            last = attempt + 1 >= attempts
+            try:
+                resp = self._http.request(method, path, params=params, json=json)
+            except _RETRY_EXCEPTIONS as exc:
+                if last:
+                    raise
+                delay = min(2.0**attempt, _MAX_BACKOFF_SECONDS)
+                logger.warning(
+                    "GitHub %s %s failed (%s); retry %d/%d in %.1fs",
+                    method, path, type(exc).__name__, attempt + 1, self._max_retries, delay,
+                )
+                time.sleep(delay)
+                continue
+            if resp.status_code in _RETRY_STATUSES and not last:
+                delay = _retry_after(resp) or min(2.0**attempt, _MAX_BACKOFF_SECONDS)
+                logger.warning(
+                    "GitHub %s %s -> %d; retry %d/%d in %.1fs",
+                    method, path, resp.status_code, attempt + 1, self._max_retries, delay,
+                )
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            return resp.json() if resp.content else None
+        return None  # unreachable
+
     def _get(self, path: str, **params: Any) -> Any:
-        resp = self._http.get(path, params=params or None)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request("GET", path, params=params or None)
 
     def _post(self, path: str, json: Any) -> Any:
-        resp = self._http.post(path, json=json)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request("POST", path, json=json)
 
     def _patch(self, path: str, json: Any) -> Any:
-        resp = self._http.patch(path, json=json)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request("PATCH", path, json=json)
 
     def _put(self, path: str, json: Any) -> Any:
-        resp = self._http.put(path, json=json)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request("PUT", path, json=json)
 
     # -- identity ------------------------------------------------------------
     def authenticated_login(self) -> str:

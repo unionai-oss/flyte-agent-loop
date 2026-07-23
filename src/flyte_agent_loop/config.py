@@ -24,6 +24,8 @@ ENV_MEMORY_KEY = "FLYTE_AGENT_MEMORY_KEY"
 ENV_GITHUB_API = "GITHUB_API_URL"
 ENV_MAX_TOKENS = "FLYTE_AGENT_MAX_TOKENS"
 ENV_MAX_TRIES = "FLYTE_AGENT_MAX_TRIES"
+ENV_HTTP_TIMEOUT = "FLYTE_AGENT_HTTP_TIMEOUT"
+ENV_HTTP_RETRIES = "FLYTE_AGENT_HTTP_RETRIES"
 
 # Default model. litellm routes this to Anthropic when ANTHROPIC_API_KEY is set.
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -37,6 +39,10 @@ DEFAULT_GITHUB_API = "https://api.github.com"
 DEFAULT_MAX_TOKENS = 32000
 # How many build->verify attempts the issue builder gets to satisfy the verifier.
 DEFAULT_MAX_TRIES = 3
+# GitHub HTTP request timeout (seconds) and how many times to retry a request that
+# times out / hits a transient (5xx / 429) failure, with exponential backoff.
+DEFAULT_HTTP_TIMEOUT = 30.0
+DEFAULT_HTTP_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,8 @@ class Settings:
     github_api_url: str
     max_tokens: int
     max_tries: int
+    http_timeout: float = DEFAULT_HTTP_TIMEOUT
+    http_retries: int = DEFAULT_HTTP_RETRIES
 
     @property
     def owner(self) -> str:
@@ -89,4 +97,6 @@ def load_settings() -> Settings:
         github_api_url=os.environ.get(ENV_GITHUB_API, DEFAULT_GITHUB_API).rstrip("/"),
         max_tokens=int(os.environ.get(ENV_MAX_TOKENS, DEFAULT_MAX_TOKENS)),
         max_tries=max(1, int(os.environ.get(ENV_MAX_TRIES, DEFAULT_MAX_TRIES))),
+        http_timeout=float(os.environ.get(ENV_HTTP_TIMEOUT, DEFAULT_HTTP_TIMEOUT)),
+        http_retries=max(0, int(os.environ.get(ENV_HTTP_RETRIES, DEFAULT_HTTP_RETRIES))),
     )

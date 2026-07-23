@@ -63,14 +63,34 @@ def main() -> None:
     from flyte._initialize import get_client
 
     console = get_client().console
+
+    # Only the scheduled triggers are interesting here — not the ~dozen tool tasks
+    # that also get deployed. Collect each deployed task's triggers with its active
+    # flag, then print the activated ones (falling back to all if the platform
+    # doesn't report activation state).
+    triggers: list[tuple[str, str, bool]] = []
     for deployment in deployments:
         for deployed_env in deployment.envs.values():
             for task in deployed_env.deployed_entities:
                 task_id = task.deployed_task.task_template.id
-                url = console.task_url(
-                    project=task_id.project, domain=task_id.domain, task_name=task_id.name
-                )
-                print(f"{task_id.name}  {url}")
+                for trig in getattr(task, "deployed_triggers", None) or []:
+                    url = console.trigger_url(
+                        project=task_id.project,
+                        domain=task_id.domain,
+                        task_name=task_id.name,
+                        trigger_name=trig.name,
+                    )
+                    active = bool(getattr(getattr(trig, "spec", None), "active", False))
+                    triggers.append((trig.name, url, active))
+
+    active_triggers = [(n, u) for n, u, a in triggers if a]
+    to_show = active_triggers or [(n, u) for n, u, _ in triggers]
+    if not to_show:
+        print("No triggers deployed." if not args.dryrun else "No triggers planned.")
+    else:
+        print(f"Activated {len(to_show)} trigger(s):")
+        for name, url in to_show:
+            print(f"  {name}  {url}")
 
 
 if __name__ == "__main__":

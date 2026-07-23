@@ -1,3 +1,5 @@
+.flyte/local-cache/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

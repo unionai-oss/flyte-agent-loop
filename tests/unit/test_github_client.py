@@ -316,6 +316,67 @@ def test_post_lgtm_posts_once_then_skips():
     assert "review it again" in posted[0].lower() or "take another look" in posted[0].lower()
 
 
+def _no_sleep(monkeypatch):
+    import flyte_agent_loop.github_client as gc
+
+    monkeypatch.setattr(gc.time, "sleep", lambda *_: None)  # skip real backoff
+
+
+def test_request_retries_transient_timeout_then_succeeds(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectTimeout("timed out", request=request)
+        return httpx.Response(200, json=[])
+
+    with _client_with(handler) as gh:  # default http_retries=3
+        assert gh.list_open_issues() == []
+    assert calls["n"] == 3  # 2 timeouts + 1 success
+
+
+def test_request_retries_5xx_then_succeeds(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(503, json={"m": "unavailable"})
+        return httpx.Response(200, json=[])
+
+    with _client_with(handler) as gh:
+        assert gh.list_open_issues() == []
+    assert calls["n"] == 2
+
+
+def test_request_gives_up_after_retries(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    def handler(request):
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    with _client_with(handler) as gh:
+        with pytest.raises(httpx.ConnectTimeout):
+            gh.list_open_issues()
+
+
+def test_request_does_not_retry_4xx(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    with _client_with(handler) as gh:
+        with pytest.raises(httpx.HTTPStatusError):
+            gh.get_issue(1)
+    assert calls["n"] == 1  # 404 is a real error — not retried
+
+
 def test_missing_repo_setting_raises(monkeypatch):
     from flyte_agent_loop.config import load_settings
 

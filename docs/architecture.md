@@ -177,11 +177,15 @@ not mistaken for guarantees:
   compaction/retention step would be needed for long-lived deployments.
 - **Blocking I/O.** The GitHub client is synchronous `httpx`; calls block the
   task's event loop. Fine for these single-flight tasks, not for high fan-out.
-- **No GitHub retry/backoff.** Tasks run with `retries=0`. Transient failures do
-  not crash the task, though: each pipeline wraps its flow in a top-level handler
-  that releases the dibs (so a future scheduled fire can retry) and returns an
-  `error` RunRecord instead. Adding a backoff/retry on the GitHub calls
-  themselves would reduce how often that path is hit.
+- **GitHub retry vs. hard egress.** The client retries transient failures
+  (connect/read timeouts, 5xx, 429) with exponential backoff
+  (`FLYTE_AGENT_HTTP_RETRIES`, `FLYTE_AGENT_HTTP_TIMEOUT`), so a *flaky* connection
+  to `api.github.com` recovers. But if the task pod has **no egress** to GitHub
+  (a common devbox/firewall situation — object storage can be reachable while
+  `api.github.com` is not), every attempt times out; retries just delay the
+  inevitable `error` RunRecord. That's an infra fix (allow egress to
+  `api.github.com`), not a code one. Tasks themselves run with `retries=0`; a
+  pipeline that errors still degrades gracefully (releases dibs, records `error`).
 
 ## Stages & error recovery
 
