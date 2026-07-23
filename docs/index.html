@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>flyte-agent-loop · Loop engineering with Flyte 2</title>
+<meta name="description" content="A slide deck for flyte-agent-loop: three scheduled Flyte 2 agents that take GitHub issues to reviewed PRs, then grade themselves." />
+<style>
+  :root {
+    --bg:#0b1020; --bg2:#0f1530; --panel:#141c38; --panel2:#1b2447;
+    --ink:#e7ecff; --muted:#9aa6d0; --faint:#66719d;
+    --accent:#7c5cff; --accent2:#22d3ee; --good:#34d399; --warn:#fbbf24; --bad:#fb7185;
+    --line:#26305c; --code:#0a0e1c;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:"Inter",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body {
+    background:
+      radial-gradient(1100px 620px at 82% -8%, rgba(124,92,255,.20), transparent 60%),
+      radial-gradient(900px 560px at 10% 108%, rgba(34,211,238,.14), transparent 60%),
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  /* Deck layout */
+  #deck { position:fixed; inset:0; }
+  .slide {
+    position:absolute; inset:0; display:none;
+    padding:clamp(28px,5vw,84px); padding-bottom:74px;
+    flex-direction:column; justify-content:center;
+    animation:fade .42s ease both;
+  }
+  .slide.active { display:flex; }
+  @keyframes fade { from { opacity:0; transform:translateY(14px) scale(.995);} to { opacity:1; transform:none; } }
+  .wrap { width:100%; max-width:1120px; margin:0 auto; }
+
+  /* Typography */
+  h1 { font-size:clamp(34px,6vw,74px); line-height:1.02; margin:0 0 .35em; letter-spacing:-.02em; font-weight:800; }
+  h2 { font-size:clamp(24px,3.6vw,44px); margin:0 0 .5em; letter-spacing:-.02em; font-weight:800; }
+  h2 .n { color:var(--accent2); font-variant-numeric:tabular-nums; }
+  p.lead { font-size:clamp(17px,2.1vw,25px); color:var(--muted); line-height:1.5; margin:.2em 0; max-width:24em; }
+  .kicker { display:inline-flex; align-items:center; gap:.55em; font-family:var(--mono); font-size:13px;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--accent2);
+    border:1px solid var(--line); background:rgba(34,211,238,.05); padding:.4em .8em; border-radius:999px; margin-bottom:1.1em; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--accent2); box-shadow:0 0 12px var(--accent2); }
+  .grad { background:linear-gradient(100deg,#fff 6%, var(--accent2) 48%, var(--accent) 92%);
+    -webkit-background-clip:text; background-clip:text; color:transparent; }
+  strong { color:#fff; font-weight:700; }
+  a { color:var(--accent2); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  ul.feat { list-style:none; padding:0; margin:.3em 0 0; display:grid; gap:.7em; }
+  ul.feat li { position:relative; padding-left:1.7em; font-size:clamp(15px,1.9vw,21px); color:var(--ink); line-height:1.45; }
+  ul.feat li::before { content:"▸"; position:absolute; left:0; top:0; color:var(--accent); font-weight:800; }
+  ul.feat li b { color:#fff; }
+  ul.feat li span { color:var(--muted); }
+
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  @media (max-width:820px){ .grid2,.grid3 { grid-template-columns:1fr; } }
+
+  .card { background:linear-gradient(180deg,var(--panel),rgba(20,28,56,.55));
+    border:1px solid var(--line); border-radius:18px; padding:22px 22px; }
+  .card h3 { margin:0 0 .5em; font-size:clamp(17px,2vw,22px); letter-spacing:-.01em; display:flex; align-items:center; gap:.5em; }
+  .card p { margin:.2em 0; color:var(--muted); font-size:15.5px; line-height:1.5; }
+  .card .tag { font-family:var(--mono); font-size:12px; color:var(--accent2); }
+  .pill { font-family:var(--mono); font-size:12px; padding:.28em .7em; border-radius:999px; border:1px solid var(--line);
+    color:var(--muted); background:var(--bg2); white-space:nowrap; }
+  .pill.good { color:var(--good); border-color:rgba(52,211,153,.35); }
+  .pill.cy { color:var(--accent2); border-color:rgba(34,211,238,.35); }
+
+  code, pre { font-family:var(--mono); }
+  pre { background:var(--code); border:1px solid var(--line); border-radius:14px;
+    padding:18px 20px; overflow:auto; font-size:clamp(12px,1.35vw,15px); line-height:1.6; margin:.2em 0; color:#cfe0ff; }
+  pre .c { color:var(--faint); }         /* comment */
+  pre .k { color:var(--accent); }        /* keyword */
+  pre .s { color:var(--good); }          /* string */
+  pre .f { color:var(--accent2); }       /* func / flag */
+  p code, li code { background:var(--code); border:1px solid var(--line); border-radius:6px; padding:.08em .45em; font-size:.9em; color:#cfe0ff; }
+
+  table.tbl { width:100%; border-collapse:collapse; font-size:clamp(14px,1.7vw,18px); }
+  table.tbl th, table.tbl td { text-align:left; padding:14px 16px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.tbl th { color:var(--faint); font-family:var(--mono); font-weight:600; font-size:12.5px; letter-spacing:.08em; text-transform:uppercase; }
+  table.tbl td b { color:#fff; }
+  table.tbl tr td:first-child { white-space:nowrap; }
+  table.tbl .cad { font-family:var(--mono); color:var(--accent2); }
+  table.tbl td .m { color:var(--muted); }
+
+  .flow { display:flex; align-items:stretch; gap:0; flex-wrap:wrap; }
+  .flow .step { flex:1 1 0; min-width:150px; background:var(--panel); border:1px solid var(--line);
+    border-radius:14px; padding:16px 16px; }
+  .flow .step .s0 { font-family:var(--mono); font-size:12px; color:var(--accent2); }
+  .flow .step b { display:block; margin:.25em 0 .15em; color:#fff; font-size:17px; }
+  .flow .step p { margin:0; color:var(--muted); font-size:13.5px; line-height:1.45; }
+  .flow .arw { display:flex; align-items:center; color:var(--accent); font-size:26px; padding:0 6px; }
+  @media (max-width:820px){ .flow .arw { transform:rotate(90deg); padding:2px 0; width:100%; justify-content:center; } }
+
+  /* mermaid host */
+  .diagram { background:var(--bg2); border:1px solid var(--line); border-radius:18px; padding:16px; overflow:auto; }
+  .mermaid { text-align:center; }
+  .mermaid svg { max-width:100%; height:auto; }
+  #arch-fallback { display:none; }
+
+  .foot { position:absolute; left:0; right:0; bottom:0; height:56px; display:flex; align-items:center;
+    gap:16px; padding:0 clamp(20px,4vw,54px); color:var(--faint); font-family:var(--mono); font-size:12.5px;
+    border-top:1px solid var(--line); background:rgba(8,12,26,.4); backdrop-filter:blur(6px); }
+  .foot .brand { color:var(--muted); }
+  .foot .brand b { color:#fff; }
+  .foot .spacer { flex:1; }
+  .foot .repo { color:var(--faint); }
+  .count { color:var(--muted); font-variant-numeric:tabular-nums; }
+
+  /* progress */
+  #bar { position:fixed; top:0; left:0; height:3px; background:linear-gradient(90deg,var(--accent),var(--accent2));
+    width:0; z-index:40; box-shadow:0 0 12px rgba(124,92,255,.6); transition:width .35s cubic-bezier(.4,0,.2,1); }
+
+  /* nav arrows */
+  .nav { position:fixed; bottom:68px; right:14px; z-index:41; display:flex; gap:8px; }
+  .nav button, .kbd-hint { -webkit-appearance:none; appearance:none; cursor:pointer;
+    background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:10px;
+    width:38px; height:34px; font-size:17px; display:grid; place-items:center; }
+  .nav button:hover { border-color:var(--accent); color:#fff; }
+  .nav button:disabled { opacity:.35; cursor:default; }
+
+  .hint { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:30;
+    color:var(--faint); font-family:var(--mono); font-size:12px; pointer-events:none;
+    transition:opacity .5s; }
+  kbd { font-family:var(--mono); border:1px solid var(--line); border-bottom-width:2px; border-radius:5px;
+    padding:.05em .45em; color:var(--muted); background:var(--bg2); font-size:.92em; }
+
+  .big { font-size:clamp(22px,3.4vw,40px); line-height:1.28; font-weight:600; letter-spacing:-.01em; max-width:20ch; }
+  .big em { font-style:normal; color:var(--accent2); }
+  .sub { color:var(--muted); font-size:clamp(15px,1.9vw,20px); margin-top:.8em; max-width:34ch; line-height:1.5; }
+  .cols { display:grid; grid-template-columns:1.05fr .95fr; gap:36px; align-items:center; }
+  @media (max-width:900px){ .cols { grid-template-columns:1fr; gap:20px; } }
+  .center { text-align:center; align-items:center; }
+  .center .wrap { display:flex; flex-direction:column; align-items:center; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+
+<div id="deck">
+
+  <!-- 1 — TITLE -->
+  <section class="slide center">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Built on Flyte 2 · flyte.ai.agents</div>
+      <h1 class="grad">flyte-agent-loop</h1>
+      <p class="lead" style="max-width:30em; text-align:center">
+        Three scheduled AI agents that cooperate over durable shared memory to take
+        <strong>GitHub issues</strong> all the way to <strong>reviewed pull requests</strong> — and then grade themselves.
+      </p>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:26px">
+        <span class="pill cy">builder · every 5m</span>
+        <span class="pill cy">reviewer · every 5m</span>
+        <span class="pill cy">distiller · every 10m</span>
+      </div>
+      <p style="margin-top:30px; font-family:var(--mono); color:var(--faint); font-size:14px">
+        github.com/unionai-oss/flyte-agent-loop
+      </p>
+    </div>
+  </section>
+
+  <!-- 2 — LOOP ENGINEERING -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> The idea</div>
+        <p class="big">Prompt engineering shapes <em>one call</em>. Loop engineering shapes what happens <em>across many calls, over time</em>.</p>
+        <p class="sub">Agents run on a schedule, coordinate through durable state, and get better from their own graded history — no human in the inner loop.</p>
+      </div>
+      <div class="card">
+        <h3>🔁 The loop</h3>
+        <ul class="feat" style="margin-top:.4em">
+          <li><b>Schedule</b> <span>— cron triggers fire the agents continuously.</span></li>
+          <li><b>Cooperate</b> <span>— they claim work &amp; share memory so they never collide or double-work.</span></li>
+          <li><b>Verify</b> <span>— every change is checked by a strict verifier before it lands.</span></li>
+          <li><b>Learn</b> <span>— a distiller folds run history into lessons fed back as context.</span></li>
+        </ul>
+        <p style="margin-top:1em; color:var(--faint); font-size:14px">Humans only file issues and review PRs. The system runs the rest.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 — AT A GLANCE -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Three pipelines, one shared memory</div>
+      <h2>The system at a glance</h2>
+      <table class="tbl">
+        <tr><th>Pipeline</th><th>Cadence</th><th>What it does</th></tr>
+        <tr>
+          <td><b>builder</b></td><td class="cad">*/5 min</td>
+          <td>Claims an open issue via a “dibs” comment, implements it (tests / examples / docs), has a <b>verifier sub-agent</b> check the work, then <span class="m">opens a PR — or files decomposed issues.</span></td>
+        </tr>
+        <tr>
+          <td><b>reviewer</b></td><td class="cad">*/5 min</td>
+          <td>Claims an open agent PR, reads its comments, makes + verifies fixes, pushes them, and <span class="m">releases the claim for follow-ups.</span></td>
+        </tr>
+        <tr>
+          <td><b>distiller</b></td><td class="cad">*/10 min</td>
+          <td>A <b>distiller Agent</b> dedupes &amp; consolidates run history into a high-signal “lessons” memory, and publishes <span class="m">metrics, the memory filesystem, and per-run reasoning traces as a Flyte report.</span></td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- 4 — ARCHITECTURE -->
+  <section class="slide" data-diagram="1">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Architecture</div>
+      <h2>Agents cooperating over durable memory</h2>
+      <div class="diagram">
+        <div class="mermaid" id="arch">
+flowchart TD
+    mem["shared MemoryStore&lt;br/&gt;context/digest.md&lt;br/&gt;runs per-run JSON&lt;br/&gt;ingest/state.json ledger"]
+    builder["builder&lt;br/&gt;every 5 min"]
+    reviewer["reviewer&lt;br/&gt;every 5 min"]
+    distiller["distiller&lt;br/&gt;every 10 min"]
+    repo["GitHub repo"]
+
+    mem --&gt;|reads context| builder
+    mem --&gt;|reads context| reviewer
+    builder --&gt;|writes records| mem
+    reviewer --&gt;|writes records| mem
+    repo --&gt;|open issues and PRs| builder
+    repo --&gt;|open PRs and comments| reviewer
+    builder --&gt;|opens PR or files issues| repo
+    reviewer --&gt;|pushes fixes| repo
+    mem --&gt;|reads records| distiller
+    distiller --&gt;|distills lessons and report| mem
+        </div>
+        <pre id="arch-fallback"><span class="c"># builder / reviewer  --reads context-->  MemoryStore</span>
+<span class="c"># builder / reviewer  --writes records-->  MemoryStore</span>
+<span class="c"># GitHub repo         --issues / PRs-->    builder / reviewer</span>
+<span class="c"># builder --opens PR or files issues-->   GitHub repo</span>
+<span class="c"># reviewer --pushes fixes-->              GitHub repo</span>
+<span class="c"># distiller --reads records / distills lessons--> MemoryStore</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 — BUILDER -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Pipeline 1 · builder</div>
+      <h2>One issue in → a PR <span style="color:var(--faint)">or</span> new issues out</h2>
+      <div class="grid2">
+        <div class="card">
+          <h3>🅰 <span>Write code</span> <span class="tag">→ pull request</span></h3>
+          <p>Stage each file with <code>stage_file</code>, then <code>submit_implementation</code>. The pipeline commits and opens the PR.</p>
+          <p style="margin-top:.6em; color:var(--faint)">Scoped to what the issue asks for — tests when behavior changes, docs when user-facing.</p>
+        </div>
+        <div class="card">
+          <h3>🅱 <span>Decompose a spec</span> <span class="tag">→ new issues</span></h3>
+          <p>Read a markdown spec, <code>stage_issue(key, title, body, depends_on)</code> per work item, then <code>submit_decomposition</code>.</p>
+          <p style="margin-top:.6em; color:var(--faint)">The pipeline creates issues in dependency order &amp; wires a <code>depends-on</code> DAG — independents run in parallel, dependents wait.</p>
+        </div>
+      </div>
+      <div class="flow" style="margin-top:20px">
+        <div class="step"><span class="s0">01</span><b>Dibs</b><p>claim an eligible open issue</p></div>
+        <div class="arw">→</div>
+        <div class="step"><span class="s0">02</span><b>Propose</b><p>agent stages a plan (read-only tools)</p></div>
+        <div class="arw">→</div>
+        <div class="step"><span class="s0">03</span><b>Verify</b><p>strict sub-agent, up to 3 tries</p></div>
+        <div class="arw">→</div>
+        <div class="step"><span class="s0">04</span><b>Write</b><p>durable task opens PR / files issues</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 — REVIEWER -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Pipeline 2 · reviewer</div>
+        <h2>PRs that review<br/>themselves</h2>
+        <p class="sub">Claims an open agent PR and always performs its own code review — human comments are extra guidance, not a prerequisite.</p>
+      </div>
+      <div class="card">
+        <ul class="feat">
+          <li><b>Read</b> <span>— the PR diff and <em>all</em> its comments.</span></li>
+          <li><b>Fix</b> <span>— stage tightly-scoped changes.</span></li>
+          <li><b>Verify</b> <span>— confirm fixes are aligned with comments <b>and</b> correct.</span></li>
+          <li><b>Push + release</b> <span>— commit to the head branch, drop the claim for follow-ups.</span></li>
+          <li><b>Approve</b> <span>— once satisfied, it LGTMs; future runs stand down until a human comments <code>/flyte-agent-loop …</code>.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 — DISTILLER -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Pipeline 3 · distiller</div>
+      <h2>The agents grade — and teach — themselves</h2>
+      <div class="grid3">
+        <div class="card">
+          <h3>📊 Evaluate</h3>
+          <p>Success / verification / error rates over the full history. Empty “no-work” runs are pruned from memory.</p>
+        </div>
+        <div class="card">
+          <h3>🧠 Consolidate</h3>
+          <p>A distiller <b>Agent</b> dedupes new runs into <code>lessons.md</code> — max signal per token — fed back to builder &amp; reviewer as context.</p>
+        </div>
+        <div class="card">
+          <h3>🔎 Report</h3>
+          <p>A Flyte report: metrics, the whole memory filesystem, and each run’s flat sub-action “reasoning trace”.</p>
+        </div>
+      </div>
+      <p style="margin-top:20px; color:var(--muted); font-size:16px">
+        Only <strong>new</strong> records trigger an Agent call — no new runs, no token spend, memory untouched.
+      </p>
+    </div>
+  </section>
+
+  <!-- 8 — DIBS -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Technique · cooperative locking</div>
+        <h2>Dibs</h2>
+        <p class="sub">Before working a target, a run posts an invisible HTML-comment marker. Overlapping cron fires parse the markers and skip anything already claimed. Claims expire (TTL) and can be released.</p>
+        <p class="sub" style="color:var(--faint)">A pure state machine over comments + an explicit <code>now</code> — fully unit-tested, no network.</p>
+      </div>
+      <div class="card">
+        <pre><span class="c">&lt;!-- flyte-agent-loop:dibs v1</span>
+<span class="c">     op=claim kind=issue</span>
+<span class="c">     agent=&lt;id&gt; run=&lt;run&gt;</span>
+<span class="c">     until=&lt;iso8601&gt; --&gt;</span></pre>
+        <p style="margin-top:.6em; color:var(--muted); font-size:14.5px">
+          Latest marker per kind wins; a <code>release</code> marker or an expired
+          <code>until</code> frees the target. Claims are re-entrant for their owner.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9 — PROPOSE / VERIFY / WRITE -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Technique · the safety invariant</div>
+      <h2>Propose → Verify → Write</h2>
+      <p class="lead" style="max-width:40em">Agents are given <strong>read-only</strong> tools. They never touch the repo directly — they <em>stage a proposal</em>, a separate strict verifier checks it, and only then does a durable pipeline task perform the write.</p>
+      <div class="grid3" style="margin-top:6px">
+        <div class="card">
+          <h3><span class="pill cy">propose</span></h3>
+          <p>Builder / reviewer agent stages files or sub-issues. No side effects.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill">verify</span></h3>
+          <p>A stricter agent returns <code>{"verified":bool,"notes":…}</code>. Fails feed back for up to 3 retries.</p>
+        </div>
+        <div class="card">
+          <h3><span class="pill good">write</span></h3>
+          <p><code>@env.task</code> tools open the PR / push fixes / file issues as tracked, reproducible actions.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 — FILE STAGING -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Technique · bounded outputs</div>
+        <h2>Staging, not one giant JSON blob</h2>
+        <p class="sub">Emitting an entire change as one JSON object overflows the model’s max output tokens and truncates into invalid JSON — silently dropping the run.</p>
+        <p class="sub">Instead the agent calls <code>stage_file(path, content)</code> once per file. With <code>parallel_tool_calls=False</code>, each turn is bounded by the <em>largest single file</em>, and state accumulates race-free in a <code>ChangeStage</code> the pipeline owns.</p>
+      </div>
+      <div class="card">
+        <pre><span class="k">stage_file</span>(<span class="s">"src/foo.py"</span>, <span class="f">…</span>)   <span class="c"># turn 1</span>
+<span class="k">stage_file</span>(<span class="s">"tests/test_foo.py"</span>, <span class="f">…</span>) <span class="c"># turn 2</span>
+<span class="k">submit_implementation</span>(
+    branch=<span class="s">"agent/issue-42-foo"</span>,
+    title=<span class="s">"…"</span>, body=<span class="s">"…"</span>, summary=<span class="s">"…"</span>,
+)
+<span class="c"># pipeline reads stage.to_plan() directly —</span>
+<span class="c"># no free-text parsing to truncate.</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 — SHARED MEMORY -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Technique · durable state</div>
+      <h2>Two memory stores, disjoint writers</h2>
+      <div class="grid2">
+        <div class="card">
+          <h3>🗂 <code>&lt;key&gt;-runs</code></h3>
+          <p>One JSON file per run at <code>runs/&lt;ts&gt;_&lt;run&gt;.json</code>.</p>
+          <p><b>Writers:</b> builder &amp; reviewer — each to a <em>unique</em> path. <b>Reader:</b> distiller.</p>
+        </div>
+        <div class="card">
+          <h3>📓 <code>&lt;key&gt;-context</code></h3>
+          <p><code>context/digest.md</code> + the <code>ingest/state.json</code> ledger.</p>
+          <p><b>Writer:</b> distiller only. <b>Readers:</b> builder &amp; reviewer.</p>
+        </div>
+      </div>
+      <p style="margin-top:18px; color:var(--muted); font-size:15.5px; max-width:52em">
+        <code>MemoryStore.save()</code> uploads the whole local root — so a single shared store would let a builder’s
+        <code>save()</code> clobber a newer digest. Splitting by writer removes the cross-writer race: <code>-runs</code>
+        writers only ever touch unique paths, and <code>-context</code> has exactly one writer.
+      </p>
+    </div>
+  </section>
+
+  <!-- 12 — DEPLOY -->
+  <section class="slide">
+    <div class="wrap cols">
+      <div>
+        <div class="kicker"><span class="dot"></span> Run it</div>
+        <h2>Local cluster,<br/>zero to provision</h2>
+        <p class="sub">The <b>Flyte Devbox</b> is a full single-node Flyte cluster in Docker — tasks run in containers, with schedules and reports, just like a remote tenant.</p>
+        <p class="sub" style="color:var(--faint)">Deploying activates three cron triggers; the reports show every execution.</p>
+      </div>
+      <div class="card">
+        <pre><span class="c"># 1. start a local Flyte cluster</span>
+<span class="k">flyte</span> start devbox
+
+<span class="c"># 2. add secrets</span>
+<span class="k">flyte</span> create secret github-token <span class="f">--value</span> …
+<span class="k">flyte</span> create secret anthropic-api-key <span class="f">--value</span> …
+
+<span class="c"># 3. deploy + activate schedules</span>
+<span class="k">export</span> FLYTE_AGENT_REPO=your-org/sandbox
+<span class="k">python</span> <span class="f">-m</span> flyte_agent_loop.deploy
+
+<span class="c"># or fire one run right now</span>
+<span class="k">python</span> <span class="f">-m</span> flyte_agent_loop.deploy <span class="f">--run</span> builder</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 — RIGOR -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Built like production</div>
+      <h2>Minimal, but not fragile</h2>
+      <div class="grid3">
+        <div class="card">
+          <h3>🧪 Hermetic tests</h3>
+          <p>Pure state machines + parsers, GitHub client against an in-memory <code>MockTransport</code>. No cluster, network, or LLM key. CI on Py 3.11–3.13.</p>
+        </div>
+        <div class="card">
+          <h3>🛟 Graceful recovery</h3>
+          <p>Every pipeline wraps its flow in try/except: on any error it logs, releases the dibs, and records an <code>error</code> run instead of crashing.</p>
+        </div>
+        <div class="card">
+          <h3>🔁 Retry &amp; backoff</h3>
+          <p>The GitHub client retries transient failures (timeouts, 5xx, 429) with exponential backoff, so a flaky connection self-heals.</p>
+        </div>
+      </div>
+      <p style="margin-top:20px; color:var(--muted); font-size:16px; max-width:54em">
+        Stages are grouped with <code>flyte.group(...)</code> so a run’s timeline reads as discrete phases — <code>claim → build → verify → open_pr</code> — rather than a flat list of actions.
+      </p>
+    </div>
+  </section>
+
+  <!-- 14 — LIMITATIONS -->
+  <section class="slide">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Honest trade-offs</div>
+      <h2>Deliberate simplifications</h2>
+      <ul class="feat" style="grid-template-columns:1fr 1fr; display:grid; gap:.75em 30px">
+        <li><b>Dibs is best-effort</b> <span>— a TOCTOU window lets two runs claim at once; the TTL + agent id make it visible &amp; self-healing, not impossible.</span></li>
+        <li><b>Distiller overlap</b> <span>— it isn’t dibs-protected; an over-long run can last-writer-win on the context store.</span></li>
+        <li><b>First page only</b> <span>— the client reads one page of issues/PRs/comments; a marker beyond it can be missed.</span></li>
+        <li><b>Unbounded growth</b> <span>— run files &amp; processed ids accumulate; only empty runs are auto-pruned.</span></li>
+        <li><b>Blocking I/O</b> <span>— the GitHub client is synchronous; fine for single-flight tasks, not high fan-out.</span></li>
+        <li><b>Egress required</b> <span>— no path to <code>api.github.com</code> is an infra fix, not a code one.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 15 — CLOSE -->
+  <section class="slide center">
+    <div class="wrap">
+      <div class="kicker"><span class="dot"></span> Thanks</div>
+      <h1 style="font-size:clamp(30px,5vw,60px)" class="grad">Agents that ship,<br/>review, and learn.</h1>
+      <p class="lead" style="max-width:30em; text-align:center">A complete loop-engineering reference on Flyte 2 — small enough to read in an afternoon, real enough to run against your repo.</p>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:24px">
+        <span class="pill cy">flyte.ai.agents.Agent</span>
+        <span class="pill cy">MemoryStore</span>
+        <span class="pill cy">Triggers · Cron</span>
+        <span class="pill cy">Reports</span>
+      </div>
+      <p style="margin-top:30px; font-family:var(--mono); font-size:15px">
+        <a href="https://github.com/unionai-oss/flyte-agent-loop">github.com/unionai-oss/flyte-agent-loop</a>
+      </p>
+      <p style="margin-top:.2em; font-family:var(--mono); color:var(--faint); font-size:13px">
+        docs/architecture.md · Union.ai · Flyte 2
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<div class="hint" id="hint">← → / space to navigate · <kbd>f</kbd> fullscreen</div>
+<div class="nav">
+  <button id="prev" aria-label="Previous slide">‹</button>
+  <button id="next" aria-label="Next slide">›</button>
+</div>
+<div class="foot">
+  <span class="brand"><b>flyte-agent-loop</b></span>
+  <span class="repo">· loop engineering with Flyte 2</span>
+  <span class="spacer"></span>
+  <span class="count"><span id="cur">1</span> / <span id="tot">15</span></span>
+</div>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var i = 0;
+  var bar = document.getElementById('bar');
+  var cur = document.getElementById('cur');
+  var tot = document.getElementById('tot');
+  var prevBtn = document.getElementById('prev');
+  var nextBtn = document.getElementById('next');
+  var hint = document.getElementById('hint');
+  tot.textContent = slides.length;
+
+  function clamp(n){ return Math.max(0, Math.min(slides.length - 1, n)); }
+
+  function show(n, push) {
+    i = clamp(n);
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    bar.style.width = ((i) / (slides.length - 1) * 100) + '%';
+    cur.textContent = i + 1;
+    prevBtn.disabled = i === 0;
+    nextBtn.disabled = i === slides.length - 1;
+    if (push !== false) {
+      try { history.replaceState(null, '', '#' + (i + 1)); } catch (e) {}
+    }
+    if (slides[i].getAttribute('data-diagram')) renderArch();
+  }
+  function next(){ show(i + 1); }
+  function prev(){ show(i - 1); }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    switch (e.key) {
+      case 'ArrowRight': case ' ': case 'PageDown': case 'l': case 'j': next(); e.preventDefault(); break;
+      case 'ArrowLeft': case 'PageUp': case 'h': case 'k': prev(); e.preventDefault(); break;
+      case 'Home': show(0); e.preventDefault(); break;
+      case 'End': show(slides.length - 1); e.preventDefault(); break;
+      case 'f': case 'F':
+        try {
+          if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen();
+          } else if (document.fullscreenElement && document.exitFullscreen) {
+            document.exitFullscreen();
+          }
+        } catch (err) {}
+        break;
+      default:
+        if (/^[0-9]$/.test(e.key)) { var t = e.key === '0' ? 9 : (parseInt(e.key,10) - 1); show(t); }
+    }
+  });
+
+  nextBtn.addEventListener('click', next);
+  prevBtn.addEventListener('click', prev);
+  document.getElementById('deck').addEventListener('click', function (e) {
+    if (e.target.closest('a, pre, button, .nav, table, .card')) return;
+    if (e.detail === 0) return;              // ignore keyboard-synthesised clicks
+    var x = e.clientX / window.innerWidth;
+    if (x > 0.62) next(); else if (x < 0.38) prev();
+  });
+
+  // touch swipe
+  var sx = 0, sy = 0;
+  addEventListener('touchstart', function (e) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, {passive:true});
+  addEventListener('touchend', function (e) {
+    var dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy)) { dx < 0 ? next() : prev(); }
+  }, {passive:true});
+
+  // fade the hint after a bit
+  setTimeout(function () { hint.style.opacity = '0'; }, 4200);
+
+  // ---- fail-safe mermaid: dynamic import, catches CDN/parse failure ----
+  var archStarted = false;
+  function renderArch() {
+    if (archStarted) return;
+    archStarted = true;
+    var el = document.getElementById('arch');
+    if (!el) return;
+    // The source is HTML-escaped in markup (so it's valid HTML); decode for mermaid.
+    var src = el.textContent;
+    function fallback() {
+      var fb = document.getElementById('arch-fallback');
+      if (fb) fb.style.display = 'block';
+      el.style.display = 'none';
+    }
+    import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
+      .then(function (m) {
+        var mermaid = m.default;
+        mermaid.initialize({
+          startOnLoad: false, theme: 'base', securityLevel: 'loose',
+          fontFamily: 'ui-monospace, monospace',
+          themeVariables: {
+            background: 'transparent',
+            primaryColor: '#161c34', primaryTextColor: '#e7ecff', primaryBorderColor: '#7c5cff',
+            secondaryColor: '#1b2447', tertiaryColor: '#0f1530',
+            lineColor: '#22d3ee', edgeLabelBackground: '#0f1530', clusterBkg: '#0f1530'
+          }
+        });
+        el.removeAttribute('data-processed');
+        el.textContent = src;                 // ensure raw graph text
+        return mermaid.run({ nodes: [el] });
+      })
+      .catch(fallback);
+  }
+
+  // start
+  var fromHash = parseInt((location.hash || '').replace('#',''), 10);
+  show(isNaN(fromHash) ? 0 : fromHash - 1, false);
+})();
+</script>
+</body>
+</html>

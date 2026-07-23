@@ -12,7 +12,15 @@ grade themselves.
 | `reviewer` | every **5 min** | Claims an open agent PR, reads its review comments, makes + verifies fixes, pushes them, and releases the claim for follow-ups. |
 | `distiller` | every **10 min** | Uses a **distiller Agent** to dedupe + consolidate the builder's and reviewer's run history into a compact, high-signal "lessons" memory (fed back to them as context), and publishes success-rate metrics, the memory filesystem, and per-run reasoning traces as a Flyte **report**. |
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design.
+See [`docs/architecture.md`](docs/architecture.md) for the full design, or the
+[**slide deck**](https://unionai-oss.github.io/flyte-agent-loop/) for the tour.
+
+> **Publishing the slides:** the deck is a single self-contained
+> [`docs/index.html`](docs/index.html) (no build step). A GitHub Actions workflow
+> ([`.github/workflows/pages.yml`](.github/workflows/pages.yml)) publishes `docs/`
+> to GitHub Pages on every push to `main` that touches it. One-time setup:
+> **Settings → Pages → Source: GitHub Actions**. GitHub then serves it at
+> `https://unionai-oss.github.io/flyte-agent-loop/`.
 
 ## How it works
 
