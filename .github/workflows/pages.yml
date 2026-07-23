@@ -35,6 +35,10 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Turn on Pages (Build source = GitHub Actions) via the API if it isn't
+          # already enabled, so no manual Settings -> Pages step is required.
+          enablement: true
 
       - name: Upload docs/ as the Pages artifact
         uses: actions/upload-pages-artifact@v3
