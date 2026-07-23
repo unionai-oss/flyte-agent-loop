@@ -129,8 +129,8 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
    [Create a GitHub token](#create-a-github-token)):
 
    ```bash
-   flyte create secret --project flytesnacks --domain development github-token       --value github_pat_xxx
-   flyte create secret --project flytesnacks --domain development anthropic-api-key  --value sk-ant-xxx
+   flyte create secret --project flytesnacks --domain development github-token --value github_pat_xxx
+   flyte create secret --project flytesnacks --domain development anthropic-api-key --value sk-ant-xxx
    ```
 
 4. **Deploy the pipelines** (uses `~/.flyte/config.yaml` via
@@ -139,7 +139,7 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
 
    ```bash
    export FLYTE_AGENT_REPO=your-org/your-sandbox-repo
-   python -m flyte_agent_loop.deploy            # activate schedules on the devbox
+   python -m flyte_agent_loop.deploy  # activate schedules on the devbox
    python -m flyte_agent_loop.deploy --run builder  # or trigger one run now {builder, reviewer, distiller}
    ```
 
@@ -164,8 +164,8 @@ un-deploying, **deactivate** each trigger with `flyte update trigger <trigger-na
 
 ```bash
 flyte update trigger builder_every_5m  flyte_agent_loop.builder --deactivate -p flytesnacks -d development
-flyte update trigger reviewer_every_5m    flyte_agent_loop.reviewer   --deactivate -p flytesnacks -d development
-flyte update trigger distiller_every_10m       flyte_agent_loop.distiller       --deactivate -p flytesnacks -d development
+flyte update trigger reviewer_every_5m flyte_agent_loop.reviewer --deactivate -p flytesnacks -d development
+flyte update trigger distiller_every_10m flyte_agent_loop.distiller --deactivate -p flytesnacks -d development
 ```
 
 Use the same `--config`/endpoint (and `-p`/`-d`) you deployed with. Verify with
