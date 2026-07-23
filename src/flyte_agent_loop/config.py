@@ -29,7 +29,7 @@ ENV_MAX_TRIES = "FLYTE_AGENT_MAX_TRIES"
 DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_AGENT_ID = "flyte-agent-loop"
 DEFAULT_DIBS_TTL_MINUTES = 30
-DEFAULT_MEMORY_KEY = "agent-loop-shared"
+DEFAULT_MEMORY_KEY = "agent-loop-shared-v0"
 DEFAULT_GITHUB_API = "https://api.github.com"
 # Max output tokens per LLM call. The builder emits full file contents inline, so
 # this must be generous — litellm otherwise defaults to only 4096, truncating the

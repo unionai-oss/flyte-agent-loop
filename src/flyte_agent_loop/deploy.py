@@ -30,9 +30,9 @@ import flyte
 from .environments import env
 
 # Importing the pipeline modules registers their tasks (and triggers) on ``env``.
-from .pipeline_distiller import distiller
-from .pipeline_builder import builder
-from .pipeline_reviewer import reviewer
+from .distiller_agent import distiller
+from .builder_agent import builder
+from .reviewer_agent import reviewer
 
 PIPELINES = {
     "builder": builder,

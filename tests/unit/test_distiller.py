@@ -2,7 +2,7 @@
 
 from flyte_agent_loop.config import Settings
 from flyte_agent_loop.evals import RunRecord, evaluate, render_records_brief
-from flyte_agent_loop.pipeline_distiller import _distill_prompt
+from flyte_agent_loop.distiller_agent import _distill_prompt
 
 
 def _settings():

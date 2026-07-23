@@ -42,9 +42,9 @@ src/flyte_agent_loop/
   environments.py        # shared Image, secrets, TaskEnvironment
   tools.py               # @env.task GitHub tools handed to the agents
   agents.py              # builder / reviewer / verifier agent factories + parsers
-  pipeline_builder.py   # Pipeline 1 (cron */5)
-  pipeline_reviewer.py     # Pipeline 2 (cron */5)
-  pipeline_distiller.py         # Pipeline 3 (cron */10)
+  builder_agent.py   # Pipeline 1 (cron */5)
+  reviewer_agent.py     # Pipeline 2 (cron */5)
+  distiller_agent.py         # Pipeline 3 (cron */10)
   deploy.py              # deploy env + triggers, or run one pipeline
 tests/                   # hermetic pytest suite (no cluster/network/LLM needed)
 examples/run_local.py    # run one pipeline once, locally

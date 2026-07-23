@@ -75,7 +75,7 @@ def test_verify_prompt_embeds_file_contents_not_just_paths():
     # Regression guard: the issue verifier must see the actual proposed file
     # contents (not just the file list), since they aren't committed yet.
     from flyte_agent_loop.agents import Plan
-    from flyte_agent_loop.pipeline_builder import _verify_prompt
+    from flyte_agent_loop.builder_agent import _verify_prompt
 
     plan = Plan(action="implement", files={"src/foo.py": "def foo():\n    return 42\n"}, summary="add foo", raw={})
     prompt = _verify_prompt(3, {"title": "Add foo"}, plan)

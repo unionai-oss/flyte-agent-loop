@@ -6,24 +6,24 @@ GitHub issues to merged code.
 
 ```mermaid
 flowchart TD
-    mem["🗄️ shared MemoryStore<br/>context/digest.md<br/>runs/{ts}_{run}.json<br/>ingest/state.json — ledger"]
-    issue["1. builder<br/>every 5 min"]
-    review["2. reviewer<br/>every 5 min"]
-    distiller["3. distiller<br/>every 10 min"]
-    repo[("GitHub repo")]
+    mem["shared MemoryStore<br/>context/digest.md<br/>runs per-run JSON<br/>ingest/state.json ledger"]
+    builder["builder<br/>every 5 min"]
+    reviewer["reviewer<br/>every 5 min"]
+    distiller["distiller<br/>every 10 min"]
+    repo["GitHub repo"]
 
-    mem -->|reads context| issue
-    mem -->|reads context| review
-    issue -->|writes records| mem
-    review -->|writes records| mem
+    mem -->|reads context| builder
+    mem -->|reads context| reviewer
+    builder -->|writes records| mem
+    reviewer -->|writes records| mem
 
-    repo -->|open issues / PRs| issue
-    repo -->|open PRs / comments| review
-    issue -->|opens PR| repo
-    review -->|pushes fixes| repo
+    repo -->|open issues and PRs| builder
+    repo -->|open PRs and comments| reviewer
+    builder -->|opens PR| repo
+    reviewer -->|pushes fixes| repo
 
     mem -->|reads records| distiller
-    distiller -->|"Agent distills lessons,<br/>publishes report"| mem
+    distiller -->|distills lessons and report| mem
 ```
 
 ## Pipelines
@@ -32,7 +32,7 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
 `flyte.TaskEnvironment` (`environments.py`). The cron cadence is set via
 `flyte.Trigger(name=..., automation=flyte.Cron("*/N * * * *"))`.
 
-### 1. `builder` — every 5 minutes (`pipeline_builder.py`)
+### 1. `builder` — every 5 minutes (`builder_agent.py`)
 
 1. **Dibs.** List open issues; skip any that already have an associated open PR,
    then for the first one with no active claim post a dibs marker comment
@@ -49,7 +49,7 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
    verifier feedback to the issue and releases the claim for a retry.
 5. **Record.** Append a `RunRecord` to shared memory.
 
-### 2. `reviewer` — every 5 minutes (`pipeline_reviewer.py`)
+### 2. `reviewer` — every 5 minutes (`reviewer_agent.py`)
 
 1. **Dibs.** Find open PRs authored by the agent's GitHub user; claim the first
    unclaimed one so prior/parallel runs know it's being worked.
@@ -62,7 +62,7 @@ Each pipeline is a single `@env.task(report=True, triggers=[...])` on one shared
    additional follow-up comments.
 6. **Record.** Append a `RunRecord`.
 
-### 3. `distiller` — every 10 minutes (`pipeline_distiller.py`)
+### 3. `distiller` — every 10 minutes (`distiller_agent.py`)
 
 The distiller reads the builder's and reviewer's run history and uses a **distiller
 Agent** (`build_distiller_agent`) to fold it into a compact, high-signal memory —

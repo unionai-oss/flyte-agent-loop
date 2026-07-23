@@ -1,7 +1,7 @@
 """Tests for the review<->verify retry messaging in pr_review."""
 
 from flyte_agent_loop.agents import Plan, Verdict
-from flyte_agent_loop.pipeline_reviewer import _retry_message, _review_message
+from flyte_agent_loop.reviewer_agent import _retry_message, _review_message
 
 
 def test_review_message_first_attempt():

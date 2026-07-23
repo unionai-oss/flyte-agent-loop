@@ -23,9 +23,9 @@ import sys
 
 import flyte
 
-from flyte_agent_loop.pipeline_distiller import distiller
-from flyte_agent_loop.pipeline_builder import builder
-from flyte_agent_loop.pipeline_reviewer import reviewer
+from flyte_agent_loop.distiller_agent import distiller
+from flyte_agent_loop.builder_agent import builder
+from flyte_agent_loop.reviewer_agent import reviewer
 
 PIPELINES = {"builder": builder, "reviewer": reviewer, "distiller": distiller}
 
