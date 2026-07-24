@@ -203,6 +203,70 @@ cluster). The `flyte` CLI ships with the `flyte` package installed above.
 > cluster — point `tests/integration/config.yaml` at `endpoint: dns:///localhost:30080`
 > with `builder: local`.
 
+## Deploy to a remote tenant (e.g. a Union tenant)
+
+Deploying to a real, always-on tenant (a [Union](https://www.union.ai/) tenant, or
+any remote Flyte 2 cluster) is the same flow as the devbox — the only differences are
+**where the CLI points**, **how you authenticate** (device flow instead of insecure
+localhost), and that the **image is built by the remote builder** instead of a local
+registry. The pipeline code and the `deploy` command are unchanged.
+
+1. **Point the CLI/SDK at your tenant.** Generate a config for the remote cluster
+   (auth negotiation opens a browser on the first command — [device
+   flow](https://www.union.ai/docs/v2/union/user-guide/authenticating/#device-flow)):
+
+   ```bash
+   flyte create config \
+     --endpoint <your-tenant>.unionai.cloud \
+     --project flytesnacks --domain development \
+     --builder remote \
+     -o ~/.flyte            # writes ~/.flyte/config.yaml (auto-discovered)
+   ```
+
+   Or write the config by hand (mirrors [`tests/integration/config.yaml`](tests/integration/config.yaml)),
+   setting `org` to your Union org:
+
+   ```yaml
+   admin:
+     endpoint: dns:///<your-tenant>.unionai.cloud
+     authType: DeviceFlow      # opens a browser to authenticate
+   image:
+     builder: remote           # the tenant builds + hosts the task image
+   task:
+     org: <your-org>
+     project: flytesnacks
+     domain: development
+   ```
+
+2. **Add the secrets** on the tenant (same names as the devbox; you need permission
+   to create secrets in the target project/domain — see
+   [Create a GitHub token](#create-a-github-token)):
+
+   ```bash
+   flyte create secret --project flytesnacks --domain development github-token --value github_pat_xxx
+   flyte create secret --project flytesnacks --domain development anthropic-api-key --value sk-ant-xxx
+   ```
+
+3. **Deploy the pipelines.** Identical to the devbox — `deploy.py` uses
+   `flyte.init_from_config()`, so it picks up `~/.flyte/config.yaml` and the remote
+   builder builds + pushes the image the tenant will run:
+
+   ```bash
+   export FLYTE_AGENT_REPO=your-org/your-sandbox-repo
+   export FLYTE_AGENT_MODEL=claude-sonnet-4-5
+   python -m flyte_agent_loop.deploy               # deploy + activate the three cron triggers
+   python -m flyte_agent_loop.deploy --dryrun      # or plan only, without applying
+   python -m flyte_agent_loop.deploy --run builder # or trigger one run now
+   ```
+
+   The deploy prints the URL of each activated trigger. Watch executions and reports
+   in your tenant's UI.
+
+> Use a **different `FLYTE_AGENT_MEMORY_KEY`** (and/or `FLYTE_AGENT_ID`) per
+> deployment if several environments share a tenant/project, so their shared memory
+> and dibs claims don't collide. To point at a different project/domain, pass
+> `-p`/`-d` (or change `task.project`/`task.domain` in the config).
+
 ## Stop the agents (deactivate all triggers)
 
 Deploying activates three cron triggers. To stop the agents from firing without
