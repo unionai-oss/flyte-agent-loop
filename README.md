@@ -60,6 +60,22 @@ examples/run_local.py    # run one pipeline once, locally
 
 ## Setup
 
+This project uses [uv](https://docs.astral.sh/uv/) to manage the environment. If
+you don't already have it (`uv --version` to check), install it:
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# macOS (Homebrew)
+brew install uv
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then create the environment and install the project:
+
 ```bash
 uv venv --python 3.13 && source .venv/bin/activate
 uv pip install -e ".[dev]"
