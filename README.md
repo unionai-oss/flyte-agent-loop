@@ -6,6 +6,10 @@ A fully functional **loop-engineering** system built on
 autonomously take GitHub issues all the way to reviewed pull requests — and then
 grade themselves.
 
+> Want to build your own agents? The
+> [**flyteorg/flyte-agent-plugins**](https://github.com/flyteorg/flyte-agent-plugins)
+> repo provides the Flyte agent plugin and building blocks this project is built on.
+
 | Pipeline | Cadence | What it does |
 | --- | --- | --- |
 | `builder` | every **5 min** | Claims an open issue (via a "dibs" comment), implements it with tests/examples/docs, has a **verifier sub-agent** check the work, then opens a PR. |
