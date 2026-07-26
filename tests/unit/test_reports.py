@@ -1,6 +1,6 @@
 """Tests for report styling + tab renaming + shared-memory rendering."""
 
-from flyte_agent_loop.report_style import _md_to_html, _rename_tabs
+from flyte_agent_loop.reports import _md_to_html, _rename_tabs
 
 
 class _Tab:
@@ -41,8 +41,8 @@ def test_md_to_html_escapes_html():
 
 
 def test_render_memory_store_html_groups_and_truncates():
-    from flyte_agent_loop.memory_context import MemoryFile
-    from flyte_agent_loop.report_style import render_memory_store_html
+    from flyte_agent_loop.memory import MemoryFile
+    from flyte_agent_loop.reports import render_memory_store_html
 
     files = [
         MemoryFile(store="k-runs", path="runs/a.json", size=7, content='{"x": 1}'),
@@ -61,13 +61,13 @@ def test_render_memory_store_html_groups_and_truncates():
 
 
 def test_render_memory_store_html_empty():
-    from flyte_agent_loop.report_style import render_memory_store_html
+    from flyte_agent_loop.reports import render_memory_store_html
 
     assert "empty" in render_memory_store_html([])
 
 
 def test_link_opens_new_tab_and_escapes():
-    from flyte_agent_loop.report_style import link
+    from flyte_agent_loop.reports import link
 
     html = link("https://github.com/o/r/issues/5", "#5")
     assert 'href="https://github.com/o/r/issues/5"' in html
@@ -84,7 +84,7 @@ def test_install_live_report_flush_registers_agent_callback():
 
     from flyte.ai.agents import agent_progress_cb
 
-    from flyte_agent_loop.report_style import install_live_report_flush
+    from flyte_agent_loop.reports import install_live_report_flush
 
     try:
         install_live_report_flush()

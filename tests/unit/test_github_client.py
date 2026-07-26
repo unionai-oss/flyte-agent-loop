@@ -109,7 +109,7 @@ def test_try_claim_blocked_by_other_agent_does_not_post():
 
 def test_try_claim_reentrant_for_same_run(monkeypatch):
     # The SAME run re-claiming its own held target is idempotent (no duplicate post).
-    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r1")
+    monkeypatch.setattr("flyte_agent_loop.github_client.run_id", lambda: "r1")
     mine = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
     fake = FakeGitHub(comments={5: [{"user": {"login": "agentA"}, "body": mine}]})
     with client_for(fake) as gh:
@@ -122,7 +122,7 @@ def test_try_claim_blocked_by_another_run_of_same_agent(monkeypatch):
     # A DIFFERENT run of the same agent already holds the claim — we must stand down.
     # (Every run shares the agent id, so ownership is keyed on the unique run id.
     # This is the leak that previously let a second run re-enter and open a dup PR.)
-    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r2")
+    monkeypatch.setattr("flyte_agent_loop.github_client.run_id", lambda: "r2")
     prior = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
     fake = FakeGitHub(comments={5: [{"user": {"login": "agentA"}, "body": prior}]})
     with client_for(fake) as gh:
@@ -135,7 +135,7 @@ def test_try_claim_loses_readback_race_to_earlier_run(monkeypatch):
     # Race: on our first read the target looks free, so we post a claim — but a
     # concurrent run (r1) posted its claim just before ours. On read-back, the earlier
     # claim wins (first-come-first-served) and we stand down instead of also proceeding.
-    monkeypatch.setattr("flyte_agent_loop.github_client._run_id", lambda: "r2")
+    monkeypatch.setattr("flyte_agent_loop.github_client.run_id", lambda: "r2")
     earlier = dibs.render_claim("issue", "agentA", "r1", NOW.replace(hour=13))
     state = {"reads": 0, "ours": None}
 

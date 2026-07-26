@@ -41,13 +41,14 @@ from .agents import (
     render_plan_files,
 )
 from .staging import ChangeStage, issue_builder_tools
-from .common import iso, run_id, run_name, utcnow
+from .common import run_id, utcnow
 from .config import Settings, load_settings
 from .environments import env
 from .evals import RunRecord
 from .github_client import GitHubClient, blocking_dependencies
-from .memory_context import read_shared_context, record_run
-from .report_style import finalize_report, install_live_report_flush, link, render_memory_tab
+from .memory import read_shared_context
+from .pipeline import comment_and_release, finish_run, new_record, release_claim, safe_release
+from .reports import install_live_report_flush, link, render_memory_tab
 from .tools import open_issues_from_decomposition, open_pr_with_changes
 
 TRIGGER = flyte.Trigger(
@@ -246,20 +247,11 @@ def _record(
     pr_url: str = "", verified: bool = False, verifier_notes: str = "", attempts: int = 1,
     summary: str = "", error: str = "",
 ) -> RunRecord:
-    return RunRecord(
-        pipeline="builder",
-        run_id=rid,
-        timestamp=iso(now),
-        action=action,
-        target_kind="issue" if number is not None else "",
-        target_number=number,
-        pr_number=pr_number,
-        pr_url=pr_url,
-        verified=verified,
-        verifier_notes=verifier_notes,
-        attempts=attempts,
-        summary=summary,
-        error=error,
+    """This pipeline's RunRecord — a builder run works ``issue`` targets."""
+    return new_record(
+        "builder", "issue", rid, now, action, number=number, pr_number=pr_number,
+        pr_url=pr_url, verified=verified, verifier_notes=verifier_notes, attempts=attempts,
+        summary=summary, error=error,
     )
 
 
@@ -391,40 +383,19 @@ def _issue_already_has_open_pr(settings: Settings, number: int) -> bool:
         return number in gh.issues_with_open_prs()
 
 
+# Dibs release + run bookkeeping are shared with the reviewer; these thin wrappers
+# just bake in this pipeline's target kind ("issue"). See ``pipeline.py``.
 def _release(settings: Settings, number: int, now) -> None:
-    with GitHubClient(settings) as gh:
-        gh.release(number, "issue", now=now)
+    release_claim(settings, number, "issue", now)
 
 
 def _comment_and_release(settings: Settings, number: int, now, body: str) -> None:
-    with GitHubClient(settings) as gh:
-        gh.add_comment(number, body)
-        gh.release(number, "issue", now=now)
+    comment_and_release(settings, number, "issue", now, body)
 
 
 def _safe_release(settings: Settings, number: int, now) -> None:
-    """Best-effort dibs release; never raises (used on the error path)."""
-    try:
-        _release(settings, number, now)
-    except Exception:
-        flyte.logger.warning(f"failed to release dibs on issue #{number}")
+    safe_release(settings, number, "issue", now)
 
 
 async def _finish(settings: Settings, record: RunRecord) -> RunRecord:
-    # Return the RunRecord dataclass (not .to_dict()): Flyte serializes dataclass
-    # outputs natively, including Optional/None fields. A ``dict[str, Any]`` output
-    # would be pickled per-value, and the pickle transformer rejects None values.
-    #
-    # Persisting to memory + flushing the report are best-effort: a failure here
-    # must not turn a completed run into a task crash.
-    record.repo = settings.repo
-    record.run_name = run_name()
-    try:
-        await record_run(settings, record)
-    except Exception:
-        flyte.logger.warning("failed to persist run record to memory")
-    try:
-        await finalize_report()
-    except Exception:
-        flyte.logger.warning("failed to flush report")
-    return record
+    return await finish_run(settings, record)

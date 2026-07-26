@@ -205,7 +205,7 @@ def render_memory_tab(context: str) -> None:
 def render_memory_store_html(files) -> str:
     """Render the shared-memory filesystem (paths + truncated contents) as HTML.
 
-    ``files`` is a list of ``memory_context.MemoryFile`` (or any object with
+    ``files`` is a list of ``memory.MemoryFile`` (or any object with
     ``store``/``path``/``size``/``content`` attributes). Files are grouped by store,
     each shown as an expandable entry.
     """

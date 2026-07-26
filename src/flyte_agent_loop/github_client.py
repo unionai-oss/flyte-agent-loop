@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 
 from . import dibs
+from .common import run_id
 from .config import Settings
 
 logger = logging.getLogger(__name__)
@@ -571,7 +572,7 @@ class GitHubClient:
         """
         now = now or datetime.now(timezone.utc)
         agent = self.settings.agent_id
-        run = _run_id()
+        run = run_id()
 
         owner = dibs.owning_claim(
             dibs.parse_markers(c["body"] for c in self.list_comments(number)), kind, now
@@ -596,25 +597,5 @@ class GitHubClient:
         """Post a release marker so follow-up runs may pick this up again."""
         now = now or datetime.now(timezone.utc)
         return self.add_comment(
-            number, dibs.render_release(kind, self.settings.agent_id, _run_id(), now)
+            number, dibs.render_release(kind, self.settings.agent_id, run_id(), now)
         )
-
-
-def _run_id() -> str:
-    """Best-effort unique run identifier for dibs provenance.
-
-    Uses the Flyte action name when running inside a task, otherwise a short
-    random token.
-    """
-    try:
-        import flyte
-
-        ctx = flyte.ctx()
-        name = getattr(getattr(ctx, "action", None), "name", None)
-        if name:
-            return str(name)
-    except Exception:
-        pass
-    import uuid
-
-    return uuid.uuid4().hex[:12]

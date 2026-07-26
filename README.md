@@ -44,22 +44,36 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design, or the
 
 ## Layout
 
+The package is meant to be read top-to-bottom, from the deploy entrypoint down to the
+low-level building blocks (`src/flyte_agent_loop/__init__.py` is the reading guide):
+
 ```
 src/flyte_agent_loop/
-  config.py              # env-var settings
-  dibs.py                # pure cooperative-claim state machine
-  github_client.py       # small GitHub REST client (dibs + issues/PRs/commits)
-  evals.py               # pure metrics + context compaction
-  memory_context.py      # MemoryStore read/write helpers
-  environments.py        # shared Image, secrets, TaskEnvironment
-  tools.py               # @env.task GitHub tools handed to the agents
-  agents.py              # builder / reviewer / verifier agent factories + parsers
-  builder_agent.py   # Pipeline 1 (cron */5)
-  reviewer_agent.py     # Pipeline 2 (cron */5)
-  distiller_agent.py         # Pipeline 3 (cron */10)
-  deploy.py              # deploy env + triggers, or run one pipeline
-tests/                   # hermetic pytest suite (no cluster/network/LLM needed)
-examples/run_local.py    # run one pipeline once, locally
+  # 1. deploy
+  deploy.py            # CLI entrypoint: deploy the env + triggers, or run one pipeline
+  environments.py      # the shared Image + secrets + TaskEnvironment every task attaches to
+  # 2. the pipelines (the "loop")
+  builder_agent.py     # Pipeline 1 (cron */5): an issue -> a PR (or, for a spec, new issues)
+  reviewer_agent.py    # Pipeline 2 (cron */5): an agent PR -> verified fixes pushed
+  distiller_agent.py   # Pipeline 3 (cron */10): run history -> compact "lessons" memory + report
+  pipeline.py          # run bookkeeping (record / release / finish) shared by builder & reviewer
+  # 3. agent definitions
+  agents.py            # the Agent factories, their prompts, and output parsers
+  llm.py               # the custom call_llm callback (generous max_tokens)
+  # 4. tools
+  tools.py             # durable @env.task GitHub tools handed to the agents
+  staging.py           # in-process "stage a proposal" tools the pipeline verifies then applies
+  # 5. building blocks
+  dibs.py              # pure cooperative-claim ("dibs") state machine
+  github_client.py     # small, mockable GitHub REST client
+  memory.py            # read/write helpers over the shared MemoryStore
+  evals.py             # the RunRecord, metrics, and context compaction
+  introspect.py        # read a run's durable sub-actions (its "reasoning trace")
+  reports.py           # Flyte report rendering (metrics, memory, traces) + styling
+  config.py            # env-var Settings
+  common.py            # the current run's id/name + UTC time helpers
+tests/                 # hermetic pytest suite (no cluster/network/LLM needed)
+examples/run_local.py  # run one pipeline once, locally
 ```
 
 ## Setup

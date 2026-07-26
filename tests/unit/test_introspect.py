@@ -3,7 +3,7 @@
 from flyte_agent_loop.evals import RunRecord
 from flyte_agent_loop.introspect import SubAction
 from flyte_agent_loop.distiller_agent import _recent_run_names
-from flyte_agent_loop.report_style import render_run_traces_html
+from flyte_agent_loop.reports import render_run_traces_html
 
 
 def _rec(ts, run_name, action="opened_pr"):

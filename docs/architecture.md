@@ -190,7 +190,7 @@ longer both open a duplicate PR.
 ## Shared memory
 
 **Two** keyed `flyte.ai.agents.MemoryStore` s with disjoint writer sets
-(`memory_context.py`):
+(`memory.py`):
 
 - `<key>-runs` — one file per run at `runs/<ts>_<run>.json`. Written by pipelines
   1 & 2 (each to a unique path), read by pipeline 3.
